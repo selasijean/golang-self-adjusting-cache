@@ -29,7 +29,7 @@ linters-settings:
     # put imports beginning with prefix after 3rd-party packages;
     # only support one prefix
     # if not set, use goimports.local-prefixes
-    local-prefixes: github.com/selasijean/incremental-cache
+    local-prefixes: github.com/selasijean/self-adjusting-cache
 
   gofmt:
     # simplify code: gofmt with `-s` option, true by default
@@ -38,7 +38,7 @@ linters-settings:
   goimports:
     # put imports beginning with prefix after 3rd-party packages;
     # it's a comma-separated list of prefixes
-    local-prefixes: github.com/selasijean/incremental-cache
+    local-prefixes: github.com/selasijean/self-adjusting-cache
 
   revive:
     severity: warning

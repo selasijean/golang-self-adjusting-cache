@@ -1,4 +1,4 @@
-module github.com/selasijean/incremental-cache
+module github.com/selasijean/self-adjusting-cache
 
 go 1.21
 
