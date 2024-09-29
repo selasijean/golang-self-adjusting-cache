@@ -9,28 +9,30 @@ import (
 	"github.com/wcharczuk/go-incr"
 )
 
-type Value[V any] interface {
-	OnUpdate(fn func(context.Context))
-	Value() V
+type entry[K comparable, V any] struct {
+	key   K
+	value V
+	deps  []Entry[K, V]
 }
 
-type Entry[K comparable, V any] interface {
-	Dependencies() []Entry[K, V]
-	Key() K
-	Value() V
+func (e *entry[K, V]) Key() K {
+	return e.key
 }
 
-type Configurable[K comparable, V any] interface {
-	WithWriteBackFn(fn func(key K, value V) error) Configurable[K, V]
-	WithParallelism(enabled bool) Configurable[K, V]
-	WithValueFn(fn func(key K) (V, error)) Configurable[K, V]
-	WithCutoffFn(fn func(ctx context.Context, previous V, current V) (bool, error)) Configurable[K, V]
+func (e *entry[K, V]) Value() V {
+	return e.value
 }
 
-type Cache[K comparable, V any] interface {
-	Configurable[K, V]
-	Put(ctx context.Context, entries ...Entry[K, V]) error
-	Get(key K) (Value[V], bool)
+func (e *entry[K, V]) Dependencies() []Entry[K, V] {
+	return e.deps
+}
+
+func NewEntry[K comparable, V any](key K, value V, deps []Entry[K, V]) Entry[K, V] {
+	return &entry[K, V]{
+		key:   key,
+		value: value,
+		deps:  deps,
+	}
 }
 
 const (
@@ -90,15 +92,15 @@ type CacheOption func(*CacheOptions)
 type cache[K comparable, V any] struct {
 	graph             *incr.Graph
 	nodes             map[K]*cacheNode[K, V]
-	valueFn           func(key K) (V, error)
-	writeBackFn       func(key K, value V) error
+	valueFn           func(ctx context.Context, key K) (Entry[K, V], error)
+	writeBackFn       func(ctx context.Context, key K, value V) error
 	cutoffFn          func(ctx context.Context, previous V, current V) (bool, error)
 	enableParallelism bool
 
 	mu sync.RWMutex
 }
 
-func New[K comparable, V any](valueFn func(key K) (V, error), opts ...CacheOption) Cache[K, V] {
+func New[K comparable, V any](valueFn func(ctx context.Context, key K) (Entry[K, V], error), opts ...CacheOption) Cache[K, V] {
 	if valueFn == nil {
 		panic("valueFn is not set")
 	}
@@ -123,21 +125,32 @@ func New[K comparable, V any](valueFn func(key K) (V, error), opts ...CacheOptio
 	}
 }
 
+func withWriteLock(lock *sync.RWMutex, fn func() error) error {
+	lock.Lock()
+	defer lock.Unlock()
+
+	return fn()
+}
+
 func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	err := withWriteLock(&c.mu, func() error {
+		visited := make(map[K]bool)
+		for _, entry := range entries {
+			node, err := c.unsafePut(ctx, entry.Key(), entry.Value(), entry.Dependencies(), visited)
+			if err != nil {
+				return err
+			}
 
-	visited := make(map[K]bool)
-	for _, entry := range entries {
-		node, err := c.unsafePut(ctx, entry.Key(), entry.Value(), entry.Dependencies(), visited)
-		if err != nil {
-			return err
+			err = node.observe()
+			if err != nil {
+				return err
+			}
 		}
 
-		err = node.observe()
-		if err != nil {
-			return err
-		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	if c.enableParallelism {
@@ -147,15 +160,19 @@ func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
 	return c.graph.Stabilize(ctx)
 }
 
-func (c *cache[K, V]) Get(key K) (Value[V], bool) {
+func (c *cache[K, V]) Get(key K) (Value[K, V], bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	node, ok := c.nodes[key]
+	if !ok || node.invalid {
+		return nil, false
+	}
+
 	return node, ok
 }
 
-func (c *cache[K, V]) WithWriteBackFn(fn func(key K, value V) error) Configurable[K, V] {
+func (c *cache[K, V]) WithWriteBackFn(fn func(ctx context.Context, key K, value V) error) Cache[K, V] {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -163,7 +180,7 @@ func (c *cache[K, V]) WithWriteBackFn(fn func(key K, value V) error) Configurabl
 	return c
 }
 
-func (c *cache[K, V]) WithParallelism(enabled bool) Configurable[K, V] {
+func (c *cache[K, V]) WithParallelism(enabled bool) Cache[K, V] {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -171,19 +188,7 @@ func (c *cache[K, V]) WithParallelism(enabled bool) Configurable[K, V] {
 	return c
 }
 
-func (c *cache[K, V]) WithValueFn(fn func(key K) (V, error)) Configurable[K, V] {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if fn == nil {
-		panic("valueFn is not set")
-	}
-
-	c.valueFn = fn
-	return c
-}
-
-func (c *cache[K, V]) WithCutoffFn(fn func(ctx context.Context, previous V, current V) (bool, error)) Configurable[K, V] {
+func (c *cache[K, V]) WithCutoffFn(fn func(ctx context.Context, previous V, current V) (bool, error)) Cache[K, V] {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

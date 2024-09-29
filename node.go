@@ -12,13 +12,14 @@ type cacheNode[K comparable, V any] struct {
 
 	initialValue V
 	useValueFn   bool
+	invalid      bool
 
 	graph *incr.Graph
 
 	incremental incr.Incr[V]
 	valueFnIncr incr.Incr[V]
 	observeIncr incr.Incr[V]
-	cacheKey    incr.VarIncr[K]
+	refreshKey  incr.VarIncr[K]
 
 	onUpdateHandlers []func(context.Context)
 }
@@ -27,13 +28,13 @@ func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V, dependenc
 	graph := c.graph
 	n := &cacheNode[K, V]{
 		graph:        graph,
-		cacheKey:     incr.Var(graph, key),
+		refreshKey:   incr.Var(graph, key),
 		initialValue: value,
 		useValueFn:   false,
 		dependencies: dependencies,
 	}
 
-	result := incr.BindContext(graph, n.cacheKey, func(ctx context.Context, bs incr.Scope, _ K) (incr.Incr[V], error) {
+	result := incr.BindContext(graph, n.refreshKey, func(ctx context.Context, bs incr.Scope, _ K) (incr.Incr[V], error) {
 		deps := n.dependencies
 		incrs := make([]incr.Incr[V], 0, len(deps))
 
@@ -46,26 +47,31 @@ func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V, dependenc
 			incrs = append(incrs, node.incremental)
 		}
 
-		n.valueFnIncr = incr.MapNContext(graph, func(ctx context.Context, values ...V) (V, error) {
+		n.valueFnIncr = incr.MapNContext(graph, func(ctx context.Context, values ...V) (result V, err error) {
+			var zero V
+			defer func() {
+				if c.writeBackFn != nil {
+					err = c.writeBackFn(ctx, key, result)
+					if err != nil {
+						result = zero
+					}
+				}
+			}()
+
 			if !n.useValueFn {
-				return n.initialValue, nil
+				result = n.initialValue
+				return
 			}
 
-			var zero V
-			key := n.cacheKey.Value()
-			val, err := c.valueFn(key)
+			key := n.Key()
+			n.invalid = true // if cache.Get(key) is called within the valueFn, n.invalid enables us to invalidate cached value for the given key
+			val, err := c.valueFn(ctx, key)
 			if err != nil {
 				return zero, err
 			}
-
-			if c.writeBackFn != nil {
-				err = c.writeBackFn(key, val)
-				if err != nil {
-					return zero, err
-				}
-			}
-
-			return val, nil
+			n.invalid = false
+			result = val.Value()
+			return
 		}, incrs...)
 
 		n.valueFnIncr.Node().OnUpdate(func(ctx context.Context) {
@@ -100,7 +106,7 @@ func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V, dependenc
 }
 
 func (n *cacheNode[K, V]) Key() K {
-	return n.cacheKey.Value()
+	return n.refreshKey.Value()
 }
 
 func (n *cacheNode[K, V]) Value() V {
@@ -132,7 +138,7 @@ func (n *cacheNode[K, V]) withDependencies(dependencies []Entry[K, V]) *cacheNod
 
 func (n *cacheNode[K, V]) reconstructDependencyGraph() {
 	graph := n.graph
-	graph.SetStale(n.cacheKey)
+	graph.SetStale(n.refreshKey)
 	n.useValueFn = false
 }
 
