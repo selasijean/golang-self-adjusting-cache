@@ -24,4 +24,5 @@ type Cache[K comparable, V any] interface {
 	Configurable[K, V]
 	Put(ctx context.Context, entries ...Entry[K, V]) error
 	Get(key K) (Value[K, V], bool)
+	Recompute(ctx context.Context, keys ...K) error
 }

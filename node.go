@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/wcharczuk/go-incr"
 )
@@ -12,7 +13,7 @@ type cacheNode[K comparable, V any] struct {
 
 	initialValue V
 	useValueFn   bool
-	invalid      bool
+	valid        bool
 
 	graph *incr.Graph
 
@@ -22,6 +23,7 @@ type cacheNode[K comparable, V any] struct {
 	refreshKey  incr.VarIncr[K]
 
 	onUpdateHandlers []func(context.Context)
+	mu               sync.RWMutex
 }
 
 func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V, dependencies []Entry[K, V]) *cacheNode[K, V] {
@@ -32,6 +34,7 @@ func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V, dependenc
 		initialValue: value,
 		useValueFn:   false,
 		dependencies: dependencies,
+		valid:        true,
 	}
 
 	result := incr.BindContext(graph, n.refreshKey, func(ctx context.Context, bs incr.Scope, _ K) (incr.Incr[V], error) {
@@ -64,12 +67,12 @@ func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V, dependenc
 			}
 
 			key := n.Key()
-			n.invalid = true // if cache.Get(key) is called within the valueFn, n.invalid enables us to invalidate cached value for the given key
+			n.valid = false // if cache.Get(key) is called within the valueFn, n.invalid enables us to invalidate cached value for the given key
 			val, err := c.valueFn(ctx, key)
 			if err != nil {
 				return zero, err
 			}
-			n.invalid = false
+			n.valid = true
 			result = val.Value()
 			return
 		}, incrs...)
@@ -106,10 +109,16 @@ func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V, dependenc
 }
 
 func (n *cacheNode[K, V]) Key() K {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
 	return n.refreshKey.Value()
 }
 
 func (n *cacheNode[K, V]) Value() V {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
 	var zero V
 	if n.incremental == nil {
 		return zero
@@ -119,30 +128,69 @@ func (n *cacheNode[K, V]) Value() V {
 }
 
 func (n *cacheNode[K, V]) Dependencies() []Entry[K, V] {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
 	return n.dependencies
 }
 
 func (n *cacheNode[K, V]) OnUpdate(fn func(context.Context)) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
 	n.onUpdateHandlers = append(n.onUpdateHandlers, fn)
 }
 
+func (n *cacheNode[K, V]) MarkAsInvalid() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.valid = false
+}
+
+func (n *cacheNode[K, V]) MarkAsValid() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.valid = true
+}
+
+func (n *cacheNode[K, V]) IsValid() bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	return n.valid
+}
+
 func (n *cacheNode[K, V]) withInitialValue(value V) *cacheNode[K, V] {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
 	n.initialValue = value
 	return n
 }
 
 func (n *cacheNode[K, V]) withDependencies(dependencies []Entry[K, V]) *cacheNode[K, V] {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
 	n.dependencies = dependencies
 	return n
 }
 
 func (n *cacheNode[K, V]) reconstructDependencyGraph() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
 	graph := n.graph
 	graph.SetStale(n.refreshKey)
 	n.useValueFn = false
 }
 
 func (n *cacheNode[K, V]) observe() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
 	if n.incremental == nil {
 		return nil
 	}
@@ -158,4 +206,16 @@ func (n *cacheNode[K, V]) observe() error {
 	}
 
 	return nil
+}
+
+func (n *cacheNode[K, V]) height() int {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	if n.incremental == nil {
+		return 0
+	}
+
+	expertNode := incr.ExpertNode(n.incremental)
+	return expertNode.Height()
 }

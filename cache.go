@@ -97,7 +97,8 @@ type cache[K comparable, V any] struct {
 	cutoffFn          func(ctx context.Context, previous V, current V) (bool, error)
 	enableParallelism bool
 
-	mu sync.RWMutex
+	mu              sync.RWMutex
+	stabilizationMu sync.Mutex
 }
 
 func New[K comparable, V any](valueFn func(ctx context.Context, key K) (Entry[K, V], error), opts ...CacheOption) Cache[K, V] {
@@ -125,13 +126,6 @@ func New[K comparable, V any](valueFn func(ctx context.Context, key K) (Entry[K,
 	}
 }
 
-func withWriteLock(lock *sync.RWMutex, fn func() error) error {
-	lock.Lock()
-	defer lock.Unlock()
-
-	return fn()
-}
-
 func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
 	err := withWriteLock(&c.mu, func() error {
 		visited := make(map[K]bool)
@@ -153,6 +147,9 @@ func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
 		return err
 	}
 
+	c.stabilizationMu.Lock()
+	defer c.stabilizationMu.Unlock()
+
 	if c.enableParallelism {
 		return c.graph.ParallelStabilize(ctx)
 	}
@@ -165,11 +162,45 @@ func (c *cache[K, V]) Get(key K) (Value[K, V], bool) {
 	defer c.mu.RUnlock()
 
 	node, ok := c.nodes[key]
-	if !ok || node.invalid {
+	if !ok || !node.IsValid() {
 		return nil, false
 	}
 
 	return node, ok
+}
+
+func (c *cache[K, V]) Recompute(ctx context.Context, keys ...K) error {
+	results := make([]Entry[K, V], 0, len(keys))
+
+	err := withReadLock(&c.mu, func() error {
+		nodes := make([]*cacheNode[K, V], 0, len(keys))
+		for _, key := range keys {
+			node, ok := c.nodes[key]
+			if !ok {
+				return fmt.Errorf("key not found in cache: %v", key)
+			}
+
+			nodes = append(nodes, node)
+		}
+
+		sortByHeight(nodes)
+		for _, node := range nodes {
+			node.MarkAsInvalid()
+			result, err := c.valueFn(ctx, node.Key())
+			if err != nil {
+				return err
+			}
+			node.MarkAsValid()
+			results = append(results, result)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	return c.Put(ctx, results...)
 }
 
 func (c *cache[K, V]) WithWriteBackFn(fn func(ctx context.Context, key K, value V) error) Cache[K, V] {
