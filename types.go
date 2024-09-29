@@ -6,6 +6,7 @@ type Value[K comparable, V any] interface {
 	OnUpdate(fn func(context.Context))
 	Value() V
 	Dependencies() []Entry[K, V]
+	DirectDependents() []Entry[K, V]
 }
 
 type Entry[K comparable, V any] interface {

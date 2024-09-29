@@ -86,7 +86,7 @@ func TestCache_Simple(t *testing.T) {
 	evaluator = newEvaluator(cache)
 	maxT := 10
 
-	// evaluate at each i and store in to the cache. This builds dependency relationships of cached values induced by the identityFn
+	// evaluate at each i and put into the cache. This builds dependency relationships of cached values induced by the identityFn
 	for i := 0; i <= maxT; i++ {
 		key := fnKey(i)
 		result, err := evaluator.identityFn(key)
@@ -290,4 +290,34 @@ func TestCache_WithWriteBack(t *testing.T) {
 
 	// verify that the value is written back to the external cache
 	require.Equal(t, 1, externalCache[fnKey(1)])
+}
+
+func TestCacheNode_DirectDependents(t *testing.T) {
+	ctx := context.Background()
+
+	var evaluator *testEvaluator
+
+	valueFn := func(ctx context.Context, key cacheKey) (Entry[cacheKey, int], error) {
+		return evaluator.identityFn(key)
+	}
+
+	cache := New(valueFn)
+	evaluator = newEvaluator(cache)
+
+	maxT := 10
+	result, err := evaluator.identityFn(fnKey(maxT))
+	require.NoError(t, err)
+
+	err = evaluator.cache.Put(ctx, result)
+	require.NoError(t, err)
+
+	for i := 0; i < maxT; i++ {
+		key := fnKey(i)
+		node, ok := cache.Get(key)
+		require.True(t, ok)
+
+		dependents := node.DirectDependents()
+		require.Equal(t, 1, len(dependents))
+		require.Equal(t, fnKey(i+1), dependents[0].Key())
+	}
 }

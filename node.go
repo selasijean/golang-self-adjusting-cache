@@ -134,6 +134,13 @@ func (n *cacheNode[K, V]) Dependencies() []Entry[K, V] {
 	return n.dependencies
 }
 
+func (n *cacheNode[K, V]) DirectDependents() []Entry[K, V] {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	return findDirectDependents[K, V](n.incremental)
+}
+
 func (n *cacheNode[K, V]) OnUpdate(fn func(context.Context)) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
