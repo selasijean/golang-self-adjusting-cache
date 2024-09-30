@@ -348,3 +348,77 @@ func TestCacheNode_DirectDependents(t *testing.T) {
 		require.Equal(t, fnKey(i+1), dependents[0].Key())
 	}
 }
+
+func TestCache_Purge(t *testing.T) {
+	ctx := context.Background()
+
+	var evaluator *testEvaluator
+
+	valueFn := func(ctx context.Context, key cacheKey) (Entry[cacheKey, int], error) {
+		return evaluator.identityFn(key)
+	}
+
+	cache := New(valueFn)
+	evaluator = newEvaluator(cache)
+
+	maxT := 10
+	result, err := evaluator.identityFn(fnKey(maxT))
+	require.NoError(t, err)
+
+	err = evaluator.cache.Put(ctx, result)
+	require.NoError(t, err)
+
+	require.Equal(t, 11, cache.Len()) // identifyFn(10) introduces 11 nodes into the cache (0 through 10)
+
+	cache.Purge(ctx, fnKey(0))
+	require.Equal(t, 0, cache.Len()) // purge(0) clears all the direct and indirect dependents of identifyFn(0).
+
+	// verify that the cache can be used again after purging
+	err = evaluator.cache.Put(ctx, result)
+	require.NoError(t, err)
+
+	require.Equal(t, 11, cache.Len())
+	for i := 0; i < maxT; i++ {
+		key := fnKey(i)
+		v, ok := cache.Get(key)
+		require.True(t, ok)
+		require.Equal(t, i, v.Value())
+	}
+}
+
+func TestCache_Clear(t *testing.T) {
+	ctx := context.Background()
+
+	var evaluator *testEvaluator
+
+	valueFn := func(ctx context.Context, key cacheKey) (Entry[cacheKey, int], error) {
+		return evaluator.identityFn(key)
+	}
+
+	cache := New(valueFn)
+	evaluator = newEvaluator(cache)
+
+	maxT := 10
+	result, err := evaluator.identityFn(fnKey(maxT))
+	require.NoError(t, err)
+
+	err = evaluator.cache.Put(ctx, result)
+	require.NoError(t, err)
+
+	require.Equal(t, 11, cache.Len())
+
+	cache.Clear()
+	require.Equal(t, 0, cache.Len())
+
+	// verify that the cache can be used again after clearing
+	err = evaluator.cache.Put(ctx, result)
+	require.NoError(t, err)
+
+	require.Equal(t, 11, cache.Len())
+	for i := 0; i < maxT; i++ {
+		key := fnKey(i)
+		v, ok := cache.Get(key)
+		require.True(t, ok)
+		require.Equal(t, i, v.Value())
+	}
+}

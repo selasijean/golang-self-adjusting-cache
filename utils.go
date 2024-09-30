@@ -7,6 +7,15 @@ import (
 	"github.com/wcharczuk/go-incr"
 )
 
+func createIncrGraph(options CacheOptions) *incr.Graph {
+	return incr.New(
+		incr.OptGraphClearRecomputeHeapOnError(true),
+		incr.OptGraphMaxHeight(options.MaxHeightOfDependencyGraph),
+		incr.OptGraphPreallocateNodesSize(options.PreallocateCacheSize),
+		incr.OptGraphParallelism(options.Parallelism),
+	)
+}
+
 func withWriteLock(lock *sync.RWMutex, fn func() error) error {
 	lock.Lock()
 	defer lock.Unlock()

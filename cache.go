@@ -90,6 +90,7 @@ type CacheOptions struct {
 type CacheOption func(*CacheOptions)
 
 type cache[K comparable, V any] struct {
+	opts              []CacheOption
 	graph             *incr.Graph
 	nodes             map[K]*cacheNode[K, V]
 	valueFn           func(ctx context.Context, key K) (Entry[K, V], error)
@@ -114,15 +115,11 @@ func New[K comparable, V any](valueFn func(ctx context.Context, key K) (Entry[K,
 	}
 
 	return &cache[K, V]{
-		nodes: make(map[K]*cacheNode[K, V], options.PreallocateCacheSize),
-		graph: incr.New(
-			incr.OptGraphClearRecomputeHeapOnError(true),
-			incr.OptGraphMaxHeight(options.MaxHeightOfDependencyGraph),
-			incr.OptGraphPreallocateNodesSize(options.PreallocateCacheSize),
-			incr.OptGraphParallelism(options.Parallelism),
-		),
+		nodes:             make(map[K]*cacheNode[K, V], options.PreallocateCacheSize),
+		graph:             createIncrGraph(options),
 		valueFn:           valueFn,
 		enableParallelism: options.EnableParallelism,
+		opts:              opts,
 	}
 }
 
@@ -239,6 +236,63 @@ func (c *cache[K, V]) Recompute(ctx context.Context, keys ...K) error {
 	}
 
 	return c.Put(ctx, results...)
+}
+
+func (c *cache[K, V]) Clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	opts := c.opts
+	options := CacheOptions{
+		MaxHeightOfDependencyGraph: DefaultMaxHeight,
+	}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	c.nodes = make(map[K]*cacheNode[K, V], options.PreallocateCacheSize)
+	c.graph = createIncrGraph(options)
+}
+
+func (c *cache[K, V]) Purge(ctx context.Context, keys ...K) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	stack := make([]Entry[K, V], 0, len(keys))
+	for _, key := range keys {
+		node, ok := c.nodes[key]
+		if ok {
+			stack = append(stack, node)
+		}
+	}
+
+	seen := make(map[K]bool)
+	for len(stack) > 0 {
+		entry := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		node, ok := c.nodes[entry.Key()]
+		if !ok {
+			continue
+		}
+
+		for _, dep := range node.DirectDependents() {
+			if !seen[dep.Key()] {
+				seen[dep.Key()] = true
+				stack = append(stack, dep)
+			}
+		}
+
+		node.unobserve(ctx)
+		delete(c.nodes, entry.Key())
+	}
+}
+
+func (c *cache[K, V]) Len() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return len(c.nodes)
 }
 
 func (c *cache[K, V]) WithWriteBackFn(fn func(ctx context.Context, key K, value V) error) Cache[K, V] {

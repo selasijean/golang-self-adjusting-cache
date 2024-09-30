@@ -19,7 +19,7 @@ type cacheNode[K comparable, V any] struct {
 
 	incremental incr.Incr[V]
 	valueFnIncr incr.Incr[V]
-	observeIncr incr.Incr[V]
+	observeIncr incr.ObserveIncr[V]
 	refreshKey  incr.VarIncr[K]
 
 	onUpdateHandlers []func(context.Context)
@@ -213,6 +213,17 @@ func (n *cacheNode[K, V]) observe() error {
 	}
 
 	return nil
+}
+
+func (n *cacheNode[K, V]) unobserve(ctx context.Context) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if n.observeIncr == nil {
+		return
+	}
+
+	n.observeIncr.Unobserve(ctx)
 }
 
 func (n *cacheNode[K, V]) height() int {
