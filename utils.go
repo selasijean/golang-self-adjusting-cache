@@ -27,6 +27,25 @@ func sortByHeight[K comparable, V any](nodes []*cacheNode[K, V]) {
 	})
 }
 
+func invalidateNodes[K comparable, V any](nodes []*cacheNode[K, V]) {
+	for _, node := range nodes {
+		node.MarkAsInvalid()
+	}
+}
+
+func validateNodes[K comparable, V any](nodes []*cacheNode[K, V]) {
+	for _, node := range nodes {
+		node.MarkAsValid()
+	}
+}
+
+func withTemporaryInvalidation[K comparable, V any](nodes []*cacheNode[K, V], fn func() error) error {
+	invalidateNodes(nodes)
+	defer validateNodes(nodes)
+
+	return fn()
+}
+
 func findDirectDependents[K comparable, V any](node incr.INode) []Entry[K, V] {
 	out := []Entry[K, V]{}
 

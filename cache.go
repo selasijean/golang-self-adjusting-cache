@@ -126,10 +126,45 @@ func New[K comparable, V any](valueFn func(ctx context.Context, key K) (Entry[K,
 	}
 }
 
+func (c *cache[K, V]) AutoPut(ctx context.Context, keys ...K) error {
+	results := make([]Entry[K, V], 0, len(keys))
+
+	err := withReadLock(&c.mu, func() error {
+		existing := make([]*cacheNode[K, V], 0, len(keys))
+
+		for _, key := range keys {
+			node, ok := c.nodes[key]
+			if ok {
+				existing = append(existing, node)
+			}
+		}
+
+		return withTemporaryInvalidation(existing, func() error {
+			for _, key := range keys {
+				result, err := c.valueFn(ctx, key)
+				if err != nil {
+					return err
+				}
+				results = append(results, result)
+			}
+
+			return nil
+		})
+	})
+	if err != nil {
+		return err
+	}
+
+	return c.Put(ctx, results...)
+}
+
 func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
-	err := withWriteLock(&c.mu, func() error {
-		visited := make(map[K]bool)
-		for _, entry := range entries {
+	c.stabilizationMu.Lock()
+	defer c.stabilizationMu.Unlock()
+
+	visited := make(map[K]bool)
+	for _, entry := range entries {
+		err := withWriteLock(&c.mu, func() error {
 			node, err := c.unsafePut(ctx, entry.Key(), entry.Value(), entry.Dependencies(), visited)
 			if err != nil {
 				return err
@@ -139,22 +174,25 @@ func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
 			if err != nil {
 				return err
 			}
+
+			return nil
+		})
+		if err != nil {
+			return err
 		}
 
-		return nil
-	})
-	if err != nil {
-		return err
+		if c.enableParallelism {
+			err = c.graph.ParallelStabilize(ctx)
+		} else {
+			err = c.graph.Stabilize(ctx)
+		}
+
+		if err != nil {
+			return err
+		}
 	}
 
-	c.stabilizationMu.Lock()
-	defer c.stabilizationMu.Unlock()
-
-	if c.enableParallelism {
-		return c.graph.ParallelStabilize(ctx)
-	}
-
-	return c.graph.Stabilize(ctx)
+	return nil
 }
 
 func (c *cache[K, V]) Get(key K) (Value[K, V], bool) {
@@ -184,17 +222,17 @@ func (c *cache[K, V]) Recompute(ctx context.Context, keys ...K) error {
 		}
 
 		sortByHeight(nodes)
-		for _, node := range nodes {
-			node.MarkAsInvalid()
-			result, err := c.valueFn(ctx, node.Key())
-			if err != nil {
-				return err
+		return withTemporaryInvalidation(nodes, func() error {
+			for _, node := range nodes {
+				result, err := c.valueFn(ctx, node.Key())
+				if err != nil {
+					return err
+				}
+				results = append(results, result)
 			}
-			node.MarkAsValid()
-			results = append(results, result)
-		}
 
-		return nil
+			return nil
+		})
 	})
 	if err != nil {
 		return err

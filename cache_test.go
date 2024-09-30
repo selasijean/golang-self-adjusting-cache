@@ -117,6 +117,33 @@ func TestCache_Simple(t *testing.T) {
 	}
 }
 
+func TestCache_AutoPut(t *testing.T) {
+	ctx := context.Background()
+
+	var evaluator *testEvaluator
+
+	valueFn := func(ctx context.Context, key cacheKey) (Entry[cacheKey, int], error) {
+		return evaluator.identityFn(key)
+	}
+
+	cache := New(valueFn)
+	evaluator = newEvaluator(cache)
+	maxT := 10
+
+	for i := 0; i <= maxT; i++ {
+		key := fnKey(i)
+		err := cache.AutoPut(ctx, key)
+		require.NoError(t, err)
+	}
+
+	for i := 0; i <= maxT; i++ {
+		key := fnKey(i)
+		cached, ok := cache.Get(key)
+		require.True(t, ok)
+		require.Equal(t, i, cached.Value())
+	}
+}
+
 func TestCache_Recompute(t *testing.T) {
 	ctx := context.Background()
 
