@@ -36,21 +36,21 @@ func sortByHeight[K comparable, V any](nodes []*cacheNode[K, V]) {
 	})
 }
 
-func invalidateNodes[K comparable, V any](nodes []*cacheNode[K, V]) {
-	for _, node := range nodes {
-		node.MarkAsInvalid()
-	}
-}
-
-func validateNodes[K comparable, V any](nodes []*cacheNode[K, V]) {
-	for _, node := range nodes {
-		node.MarkAsValid()
-	}
-}
-
+// this is used to invalidate the cache nodes so that valueFn that call back into the cache via a Get will receive no values and hence redo their computation
 func withTemporaryInvalidation[K comparable, V any](nodes []*cacheNode[K, V], fn func() error) error {
-	invalidateNodes(nodes)
-	defer validateNodes(nodes)
+	validateNodes := func() {
+		for _, node := range nodes {
+			node.MarkAsValid()
+		}
+	}
+	invalidateNodes := func() {
+		for _, node := range nodes {
+			node.MarkAsInvalid()
+		}
+	}
+
+	invalidateNodes()
+	defer validateNodes()
 
 	return fn()
 }

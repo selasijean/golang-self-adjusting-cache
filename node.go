@@ -169,6 +169,10 @@ func (n *cacheNode[K, V]) IsValid() bool {
 	return n.valid
 }
 
+//
+// Internal methods
+//
+
 func (n *cacheNode[K, V]) withInitialValue(value V) *cacheNode[K, V] {
 	n.mu.Lock()
 	defer n.mu.Unlock()

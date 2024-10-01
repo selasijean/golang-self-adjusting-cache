@@ -27,6 +27,7 @@ func (e *entry[K, V]) Dependencies() []Entry[K, V] {
 	return e.deps
 }
 
+// NewEntry creates a cache entry with the given key, value, and dependencies
 func NewEntry[K comparable, V any](key K, value V, deps []Entry[K, V]) Entry[K, V] {
 	return &entry[K, V]{
 		key:   key,
@@ -36,8 +37,7 @@ func NewEntry[K comparable, V any](key K, value V, deps []Entry[K, V]) Entry[K, 
 }
 
 const (
-	// DefaultMaxHeight is the default maximum number of keys that can
-	// be tracked in the cache's dependency graph.
+	// DefaultMaxHeight is the default maximum length of a path in the cache's dependency graph
 	DefaultMaxHeight = 20000
 )
 
@@ -102,6 +102,7 @@ type cache[K comparable, V any] struct {
 	stabilizationMu sync.Mutex
 }
 
+// New creates a new cache with the given value function and options
 func New[K comparable, V any](valueFn func(ctx context.Context, key K) (Entry[K, V], error), opts ...CacheOption) Cache[K, V] {
 	if valueFn == nil {
 		panic("valueFn is not set")
@@ -123,6 +124,7 @@ func New[K comparable, V any](valueFn func(ctx context.Context, key K) (Entry[K,
 	}
 }
 
+// AutoPut computes the values of the given keys using the value function and adds them to the cache
 func (c *cache[K, V]) AutoPut(ctx context.Context, keys ...K) error {
 	results := make([]Entry[K, V], 0, len(keys))
 
@@ -155,6 +157,7 @@ func (c *cache[K, V]) AutoPut(ctx context.Context, keys ...K) error {
 	return c.Put(ctx, results...)
 }
 
+// Put adds the given entries to the cache
 func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
 	c.stabilizationMu.Lock()
 	defer c.stabilizationMu.Unlock()
@@ -178,6 +181,8 @@ func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
 			return err
 		}
 
+		// important to not call Stabilize within the write lock because valueFn can call back into the cache via a Get leading to a deadlock
+
 		if c.enableParallelism {
 			err = c.graph.ParallelStabilize(ctx)
 		} else {
@@ -192,6 +197,7 @@ func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
 	return nil
 }
 
+// Get returns the value of the given key if it is in the cache, and a boolean indicating whether the key was found
 func (c *cache[K, V]) Get(key K) (Value[K, V], bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -204,6 +210,8 @@ func (c *cache[K, V]) Get(key K) (Value[K, V], bool) {
 	return node, ok
 }
 
+// Recompute recomputes the values of the given keys using the value function and adds them to the cache
+// It is different from AutoPut in that it throws an error if any of the keys provided are not already in the cache
 func (c *cache[K, V]) Recompute(ctx context.Context, keys ...K) error {
 	results := make([]Entry[K, V], 0, len(keys))
 
@@ -238,6 +246,7 @@ func (c *cache[K, V]) Recompute(ctx context.Context, keys ...K) error {
 	return c.Put(ctx, results...)
 }
 
+// Clear removes all entries from the cache
 func (c *cache[K, V]) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -254,6 +263,7 @@ func (c *cache[K, V]) Clear() {
 	c.graph = createIncrGraph(options)
 }
 
+// Purge removes the given keys from the cache, and any keys that depend on them
 func (c *cache[K, V]) Purge(ctx context.Context, keys ...K) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -288,6 +298,7 @@ func (c *cache[K, V]) Purge(ctx context.Context, keys ...K) {
 	}
 }
 
+// Len returns the number of entries in the cache
 func (c *cache[K, V]) Len() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -295,6 +306,10 @@ func (c *cache[K, V]) Len() int {
 	return len(c.nodes)
 }
 
+// WithWriteBackFn sets the write back function for the cache
+//
+// The write back function is called when the value of a key is updated
+// and is useful when the value of a key is computed and then stored in an external database or service
 func (c *cache[K, V]) WithWriteBackFn(fn func(ctx context.Context, key K, value V) error) Cache[K, V] {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -303,6 +318,7 @@ func (c *cache[K, V]) WithWriteBackFn(fn func(ctx context.Context, key K, value 
 	return c
 }
 
+// WithParallelism sets whether the cache should use parallelism when recomputing values
 func (c *cache[K, V]) WithParallelism(enabled bool) Cache[K, V] {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -311,6 +327,7 @@ func (c *cache[K, V]) WithParallelism(enabled bool) Cache[K, V] {
 	return c
 }
 
+// WithCutoffFn sets the cutoff function for the cache
 func (c *cache[K, V]) WithCutoffFn(fn func(ctx context.Context, previous V, current V) (bool, error)) Cache[K, V] {
 	c.mu.Lock()
 	defer c.mu.Unlock()
