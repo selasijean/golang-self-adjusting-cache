@@ -4,7 +4,7 @@ go 1.21
 
 require (
 	github.com/stretchr/testify v1.9.0
-	github.com/wcharczuk/go-incr v1.3.2
+	github.com/wcharczuk/go-incr v1.3.3-0.20241027160554-5ed6154cf3e8
 )
 
 require (

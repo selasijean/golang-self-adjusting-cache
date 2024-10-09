@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -11,39 +12,47 @@ type cacheKey struct {
 	t int
 }
 
-type testEvaluator struct {
-	cache Cache[cacheKey, int]
+func fnKey(t int) cacheKey {
+	return cacheKey{t: t}
 }
 
-func newEvaluator(cache Cache[cacheKey, int]) *testEvaluator {
+type testEvaluator struct {
+	cache *Cache[cacheKey, int]
+}
+
+func newEvaluator(cache *Cache[cacheKey, int]) *testEvaluator {
 	return &testEvaluator{
 		cache: cache,
 	}
 }
 
 // identity(x) = identity(x-1) + 1 where identity(0) = 0.
-func (e *testEvaluator) identityFn(key cacheKey) (Entry[cacheKey, int], error) {
+func (e *testEvaluator) identityFn(ctx context.Context, key cacheKey) (Entry[cacheKey, int], error) {
 	cached, ok := e.cache.Get(key)
 	if ok {
-		return NewEntry(key, cached.Value(), cached.Dependencies()), nil
+		return cached, nil
 	}
 
 	out := NewEntry(key, 0, nil)
 	t := key.t
 	if t > 0 {
 		tMinus := fnKey(t - 1)
-		r, err := e.identityFn(tMinus)
+		r, err := e.identityFn(ctx, tMinus)
 		if err != nil {
 			return nil, err
 		}
-		out = NewEntry(key, r.Value()+1, []Entry[cacheKey, int]{r})
+		out = NewEntry(key, r.Value()+1, []cacheKey{fnKey(t - 1)})
 	}
 
+	err := e.cache.Put(ctx, out)
+	if err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
 // complex(x) = identity(x-1) + identity(x-2).
-func (e *testEvaluator) complexFn(key cacheKey) (Entry[cacheKey, int], error) {
+func (e *testEvaluator) complexFn(ctx context.Context, key cacheKey) (Entry[cacheKey, int], error) {
 	cached, ok := e.cache.Get(key)
 	if ok {
 		return NewEntry(key, cached.Value(), cached.Dependencies()), nil
@@ -53,46 +62,41 @@ func (e *testEvaluator) complexFn(key cacheKey) (Entry[cacheKey, int], error) {
 	t := key.t
 	if t > 0 {
 		t1 := fnKey(t - 1)
-		r1, err := e.identityFn(t1)
+		r1, err := e.identityFn(ctx, t1)
 		if err != nil {
 			return nil, err
 		}
 		t2 := fnKey(t - 2)
-		r2, err := e.identityFn(t2)
+		r2, err := e.identityFn(ctx, t2)
 		if err != nil {
 			return nil, err
 		}
 
-		out = NewEntry(key, r1.Value()+r2.Value(), []Entry[cacheKey, int]{r1, r2})
+		out = NewEntry(key, r1.Value()+r2.Value(), []cacheKey{t1, t2})
 	}
 
+	err := e.cache.Put(ctx, out)
+	if err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
-func fnKey(t int) cacheKey {
-	return cacheKey{t: t}
-}
-
 func TestCache_Simple(t *testing.T) {
-	ctx := context.Background()
-
 	var evaluator *testEvaluator
-
 	valueFn := func(ctx context.Context, key cacheKey) (Entry[cacheKey, int], error) {
-		return evaluator.identityFn(key)
+		return evaluator.identityFn(ctx, key)
 	}
 
 	cache := New(valueFn)
+	ctx := context.Background()
 	evaluator = newEvaluator(cache)
 	maxT := 10
 
-	// evaluate at each i and put into the cache. This builds dependency relationships of cached values induced by the identityFn
+	// evaluate at each i and put into the cache. This builds dependency relationships of cached values induced by the identityFn.
 	for i := 0; i <= maxT; i++ {
 		key := fnKey(i)
-		result, err := evaluator.identityFn(key)
-		require.NoError(t, err)
-
-		err = evaluator.cache.Put(ctx, result)
+		_, err := evaluator.identityFn(ctx, key)
 		require.NoError(t, err)
 
 		cached, ok := cache.Get(key)
@@ -101,14 +105,14 @@ func TestCache_Simple(t *testing.T) {
 	}
 
 	key := fnKey(0)
-	// override identityFn(0) with 1. This will cause a ripple effect on all cached values that depend on identityFn(0)
+	// override identityFn(0) with 1. This will cause a ripple effect on all cached values that depend on identityFn(0).
 	err := cache.Put(ctx, NewEntry(key, 1, nil))
 	require.NoError(t, err)
 	cached, ok := cache.Get(key)
 	require.True(t, ok)
 	require.Equal(t, 1, cached.Value())
 
-	// verify that the value at i is updated to i+1 because of the override above
+	// verify that the value at i is updated to i+1 because of the override above.
 	for i := 1; i <= maxT; i++ {
 		key := fnKey(i)
 		cached, ok := cache.Get(key)
@@ -117,55 +121,23 @@ func TestCache_Simple(t *testing.T) {
 	}
 }
 
-func TestCache_AutoPut(t *testing.T) {
-	ctx := context.Background()
-
-	var evaluator *testEvaluator
-
-	valueFn := func(ctx context.Context, key cacheKey) (Entry[cacheKey, int], error) {
-		return evaluator.identityFn(key)
-	}
-
-	cache := New(valueFn)
-	evaluator = newEvaluator(cache)
-	maxT := 10
-
-	for i := 0; i <= maxT; i++ {
-		key := fnKey(i)
-		err := cache.AutoPut(ctx, key)
-		require.NoError(t, err)
-	}
-
-	for i := 0; i <= maxT; i++ {
-		key := fnKey(i)
-		cached, ok := cache.Get(key)
-		require.True(t, ok)
-		require.Equal(t, i, cached.Value())
-	}
-}
-
 func TestCache_Recompute(t *testing.T) {
-	ctx := context.Background()
-
 	var evaluator *testEvaluator
-
 	var fnOverride *cacheKey
 	valueFn := func(ctx context.Context, key cacheKey) (Entry[cacheKey, int], error) {
 		if fnOverride != nil && key == *fnOverride {
-			return evaluator.complexFn(key)
+			return evaluator.complexFn(ctx, key)
 		}
-		return evaluator.identityFn(key)
+		return evaluator.identityFn(ctx, key)
 	}
 
 	cache := New(valueFn)
+	ctx := context.Background()
 	evaluator = newEvaluator(cache)
 
 	four := fnKey(4)
 
-	result, err := evaluator.identityFn(four)
-	require.NoError(t, err)
-
-	err = evaluator.cache.Put(ctx, result)
+	_, err := evaluator.identityFn(ctx, four)
 	require.NoError(t, err)
 
 	eval, ok := cache.Get(four)
@@ -190,21 +162,16 @@ func TestCache_Recompute(t *testing.T) {
 }
 
 func TestCache_WithoutCutoff(t *testing.T) {
-	ctx := context.Background()
-
 	var evaluator *testEvaluator
-
 	valueFn := func(ctx context.Context, key cacheKey) (Entry[cacheKey, int], error) {
-		return evaluator.identityFn(key)
+		return evaluator.identityFn(ctx, key)
 	}
 
 	cache := New(valueFn)
+	ctx := context.Background()
 	evaluator = newEvaluator(cache)
 
-	result, err := evaluator.identityFn(fnKey(1))
-	require.NoError(t, err)
-
-	err = evaluator.cache.Put(ctx, result)
+	_, err := evaluator.identityFn(ctx, fnKey(1))
 	require.NoError(t, err)
 
 	evalAtOne, ok := cache.Get(fnKey(1))
@@ -232,12 +199,9 @@ func TestCache_WithoutCutoff(t *testing.T) {
 }
 
 func TestCache_WithCutoff(t *testing.T) {
-	ctx := context.Background()
-
 	var evaluator *testEvaluator
-
 	valueFn := func(ctx context.Context, key cacheKey) (Entry[cacheKey, int], error) {
-		return evaluator.identityFn(key)
+		return evaluator.identityFn(ctx, key)
 	}
 
 	cutoffFn := func(ctx context.Context, previous int, current int) (bool, error) {
@@ -245,12 +209,10 @@ func TestCache_WithCutoff(t *testing.T) {
 	}
 
 	cache := New(valueFn).WithCutoffFn(cutoffFn)
+	ctx := context.Background()
 	evaluator = newEvaluator(cache)
 
-	result, err := evaluator.identityFn(fnKey(1))
-	require.NoError(t, err)
-
-	err = evaluator.cache.Put(ctx, result)
+	_, err := evaluator.identityFn(ctx, fnKey(1))
 	require.NoError(t, err)
 
 	evalAtOne, ok := cache.Get(fnKey(1))
@@ -272,6 +234,10 @@ func TestCache_WithCutoff(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, 1, evalAtZero.Value())
 
+		evalAtOne, ok := cache.Get(fnKey(1))
+		require.True(t, ok)
+		require.Equal(t, 2, evalAtOne.Value())
+
 		// update to evalAtZero should trigger an update to evalAtOne only once since cutoff kicks in after the first update
 		require.Equal(t, 1, updatedCount)
 	}
@@ -279,21 +245,23 @@ func TestCache_WithCutoff(t *testing.T) {
 	// override evalAtZero to have value 0
 	err = cache.Put(ctx, NewEntry(fnKey(0), 0, nil))
 	require.NoError(t, err)
+
 	evalAtZero, ok := cache.Get(fnKey(0))
 	require.True(t, ok)
 	require.Equal(t, 0, evalAtZero.Value())
+
+	evalAtOne, ok = cache.Get(fnKey(1))
+	require.True(t, ok)
+	require.Equal(t, 1, evalAtOne.Value())
 
 	// update to evalAtZero should trigger an update to evalAtOne
 	require.Equal(t, 2, updatedCount)
 }
 
 func TestCache_WithWriteBack(t *testing.T) {
-	ctx := context.Background()
-
 	var evaluator *testEvaluator
-
 	valueFn := func(ctx context.Context, key cacheKey) (Entry[cacheKey, int], error) {
-		return evaluator.identityFn(key)
+		return evaluator.identityFn(ctx, key)
 	}
 
 	externalCache := make(map[cacheKey]int)
@@ -303,12 +271,10 @@ func TestCache_WithWriteBack(t *testing.T) {
 	}
 
 	cache := New(valueFn).WithWriteBackFn(writeBackFn)
+	ctx := context.Background()
 	evaluator = newEvaluator(cache)
 
-	result, err := evaluator.identityFn(fnKey(1))
-	require.NoError(t, err)
-
-	err = evaluator.cache.Put(ctx, result)
+	_, err := evaluator.identityFn(ctx, fnKey(1))
 	require.NoError(t, err)
 
 	evalAtOne, ok := cache.Get(fnKey(1))
@@ -320,22 +286,17 @@ func TestCache_WithWriteBack(t *testing.T) {
 }
 
 func TestCacheNode_DirectDependents(t *testing.T) {
-	ctx := context.Background()
-
 	var evaluator *testEvaluator
-
 	valueFn := func(ctx context.Context, key cacheKey) (Entry[cacheKey, int], error) {
-		return evaluator.identityFn(key)
+		return evaluator.identityFn(ctx, key)
 	}
 
 	cache := New(valueFn)
+	ctx := context.Background()
 	evaluator = newEvaluator(cache)
 
 	maxT := 10
-	result, err := evaluator.identityFn(fnKey(maxT))
-	require.NoError(t, err)
-
-	err = evaluator.cache.Put(ctx, result)
+	_, err := evaluator.identityFn(ctx, fnKey(maxT))
 	require.NoError(t, err)
 
 	for i := 0; i < maxT; i++ {
@@ -345,36 +306,38 @@ func TestCacheNode_DirectDependents(t *testing.T) {
 
 		dependents := node.DirectDependents()
 		require.Equal(t, 1, len(dependents))
-		require.Equal(t, fnKey(i+1), dependents[0].Key())
+		require.Equal(t, fnKey(i+1), dependents[0])
 	}
 }
 
 func TestCache_Purge(t *testing.T) {
-	ctx := context.Background()
-
 	var evaluator *testEvaluator
-
 	valueFn := func(ctx context.Context, key cacheKey) (Entry[cacheKey, int], error) {
-		return evaluator.identityFn(key)
+		return evaluator.identityFn(ctx, key)
 	}
 
 	cache := New(valueFn)
+	ctx := context.Background()
 	evaluator = newEvaluator(cache)
 
 	maxT := 10
-	result, err := evaluator.identityFn(fnKey(maxT))
-	require.NoError(t, err)
-
-	err = evaluator.cache.Put(ctx, result)
+	_, err := evaluator.identityFn(ctx, fnKey(maxT))
 	require.NoError(t, err)
 
 	require.Equal(t, 11, cache.Len()) // identifyFn(10) introduces 11 nodes into the cache (0 through 10)
 
+	purgedCount := 0
+	evalAtZero, ok := cache.Get(fnKey(0))
+	require.True(t, ok)
+	evalAtZero.OnPurged(func(ctx context.Context) {
+		purgedCount++
+	})
+
 	cache.Purge(ctx, fnKey(0))
 	require.Equal(t, 0, cache.Len()) // purge(0) clears all the direct and indirect dependents of identifyFn(0).
+	require.Equal(t, 1, purgedCount)
 
-	// verify that the cache can be used again after purging
-	err = evaluator.cache.Put(ctx, result)
+	_, err = evaluator.identityFn(ctx, fnKey(maxT)) // reintroduce all the nodes into the cache and verify that the cache can be used again
 	require.NoError(t, err)
 
 	require.Equal(t, 11, cache.Len())
@@ -387,31 +350,34 @@ func TestCache_Purge(t *testing.T) {
 }
 
 func TestCache_Clear(t *testing.T) {
-	ctx := context.Background()
-
 	var evaluator *testEvaluator
-
 	valueFn := func(ctx context.Context, key cacheKey) (Entry[cacheKey, int], error) {
-		return evaluator.identityFn(key)
+		return evaluator.identityFn(ctx, key)
 	}
 
 	cache := New(valueFn)
+	ctx := context.Background()
 	evaluator = newEvaluator(cache)
 
 	maxT := 10
-	result, err := evaluator.identityFn(fnKey(maxT))
-	require.NoError(t, err)
 
-	err = evaluator.cache.Put(ctx, result)
+	_, err := evaluator.identityFn(ctx, fnKey(maxT))
 	require.NoError(t, err)
 
 	require.Equal(t, 11, cache.Len())
 
-	cache.Clear()
-	require.Equal(t, 0, cache.Len())
+	purgedCount := 0
+	evalAtZero, ok := cache.Get(fnKey(0))
+	require.True(t, ok)
+	evalAtZero.OnPurged(func(ctx context.Context) {
+		purgedCount++
+	})
 
-	// verify that the cache can be used again after clearing
-	err = evaluator.cache.Put(ctx, result)
+	cache.Clear(ctx)
+	require.Equal(t, 0, cache.Len())
+	require.Equal(t, 1, purgedCount)
+
+	_, err = evaluator.identityFn(ctx, fnKey(maxT)) // reintroduce all the nodes into the cache and verify that the cache can be used again
 	require.NoError(t, err)
 
 	require.Equal(t, 11, cache.Len())
@@ -420,5 +386,36 @@ func TestCache_Clear(t *testing.T) {
 		v, ok := cache.Get(key)
 		require.True(t, ok)
 		require.Equal(t, i, v.Value())
+	}
+}
+
+func TestCache_Parallel_Recompute(t *testing.T) {
+	var evaluator *testEvaluator
+	valueFn := func(ctx context.Context, key cacheKey) (Entry[cacheKey, int], error) {
+		return evaluator.identityFn(ctx, key)
+	}
+
+	numCPU := runtime.NumCPU()
+	cache := New(valueFn, OptUseParallelism(&numCPU))
+	ctx := context.Background()
+	evaluator = newEvaluator(cache)
+
+	maxT := 10000
+	keys := make([]cacheKey, 0, maxT)
+	for i := 0; i < maxT; i++ {
+		key := fnKey(i)
+		keys = append(keys, key)
+
+		_, err := valueFn(ctx, key)
+		require.NoError(t, err)
+	}
+
+	err := cache.Recompute(ctx, keys...)
+	require.NoError(t, err)
+
+	for _, key := range keys {
+		cached, ok := cache.Get(key)
+		require.True(t, ok)
+		require.Equal(t, key.t, cached.Value())
 	}
 }
