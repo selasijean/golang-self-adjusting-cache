@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -101,4 +102,10 @@ func remove[K comparable](keys []K, key K) (output []K, removed bool) {
 		}
 	}
 	return
+}
+
+func sortByHeight[K comparable, V any](nodes []*cacheNode[K, V]) {
+	sort.SliceStable(nodes, func(i, j int) bool {
+		return nodes[i].Height() < nodes[j].Height()
+	})
 }

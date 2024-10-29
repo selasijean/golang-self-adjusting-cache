@@ -463,3 +463,32 @@ func TestCache_Values(t *testing.T) {
 		require.Equal(t, expected, value.Value())
 	}
 }
+
+func TestCache_Copy(t *testing.T) {
+	var evaluator *testEvaluator
+	valueFn := func(ctx context.Context, key cacheKey) (Entry[cacheKey, int], error) {
+		return evaluator.identityFn(ctx, key)
+	}
+
+	original := New(valueFn)
+	ctx := context.Background()
+	evaluator = newEvaluator(original)
+
+	maxT := 10
+	_, err := evaluator.identityFn(ctx, fnKey(maxT))
+	require.NoError(t, err)
+
+	copy, err := original.Copy(ctx)
+	require.NoError(t, err)
+	require.Equal(t, original.Len(), copy.Len())
+
+	require.True(t, copy != original)
+
+	for _, key := range original.Keys() {
+		cached, ok := original.Get(key)
+		require.True(t, ok)
+		copyCached, ok := copy.Get(key)
+		require.True(t, ok)
+		require.Equal(t, cached.Value(), copyCached.Value())
+	}
+}

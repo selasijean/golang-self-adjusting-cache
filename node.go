@@ -145,6 +145,14 @@ func (n *cacheNode[K, V]) DirectDependents() []K {
 	return findDirectDependents[K, V](n.incremental)
 }
 
+func (n *cacheNode[K, V]) Height() int {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	expertNode := incr.ExpertNode(n.incremental)
+	return expertNode.Height()
+}
+
 func (n *cacheNode[K, V]) OnUpdate(fn func(context.Context)) {
 	n.mu.Lock()
 	defer n.mu.Unlock()

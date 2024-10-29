@@ -41,6 +41,10 @@ const (
 	DefaultMaxHeight = 20000
 )
 
+var DefaultCacheOptions = CacheOptions{
+	MaxHeightOfDependencyGraph: DefaultMaxHeight * 4,
+}
+
 // OptCachePreallocateNodesSize preallocates the size of the cache
 //
 // If not provided, no size for elements will be preallocated.
@@ -111,9 +115,7 @@ func New[K comparable, V any](valueFn func(ctx context.Context, key K) (Entry[K,
 		panic("valueFn is not set")
 	}
 
-	options := CacheOptions{
-		MaxHeightOfDependencyGraph: DefaultMaxHeight * 4,
-	}
+	options := DefaultCacheOptions
 	for _, opt := range opts {
 		opt(&options)
 	}
@@ -248,9 +250,7 @@ func (c *Cache[K, V]) Clear(ctx context.Context) {
 	defer c.mu.Unlock()
 
 	opts := c.opts
-	options := CacheOptions{
-		MaxHeightOfDependencyGraph: DefaultMaxHeight,
-	}
+	options := DefaultCacheOptions
 	for _, opt := range opts {
 		opt(&options)
 	}
@@ -274,7 +274,7 @@ func (c *Cache[K, V]) Clear(ctx context.Context) {
 	c.graph = createIncrGraph(options)
 }
 
-// Purge removes the given keys from the cache, and keys that depend on them.
+// Purge removes the given keys and all dependent keys from the cache.
 func (c *Cache[K, V]) Purge(ctx context.Context, keys ...K) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -324,6 +324,43 @@ func (c *Cache[K, V]) Len() int {
 	defer c.mu.RUnlock()
 
 	return len(c.nodes)
+}
+
+// Copy creates a deep copy of the cache.
+func (c *Cache[K, V]) Copy(ctx context.Context) (*Cache[K, V], error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	options := DefaultCacheOptions
+	for _, opt := range c.opts {
+		opt(&options)
+	}
+
+	copy := &Cache[K, V]{
+		nodes:             make(map[K]*cacheNode[K, V], options.PreallocateCacheSize),
+		graph:             createIncrGraph(options),
+		valueFn:           c.valueFn,
+		enableParallelism: c.enableParallelism,
+		parallelism:       c.parallelism,
+		opts:              c.opts,
+	}
+
+	nodes := make([]*cacheNode[K, V], len(c.nodes))
+	i := 0
+	for _, node := range c.nodes {
+		nodes[i] = node
+		i++
+	}
+
+	sortByHeight(nodes)
+	for _, node := range nodes {
+		err := copy.Put(ctx, node)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return copy, nil
 }
 
 // WithWriteBackFn sets the write back function for the cache
