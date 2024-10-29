@@ -143,17 +143,17 @@ func (c *Cache[K, V]) Get(key K) (Value[K, V], bool) {
 
 // Put adds the given entries to the cache.
 func (c *Cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
-	nodes := make([]*cacheNode[K, V], 0, len(entries))
+	nodes := make([]*cacheNode[K, V], len(entries))
 
 	err := withWriteLock(&c.mu, func() error {
-		for _, entry := range entries {
+		for i, entry := range entries {
 			key, value := entry.Key(), entry.Value()
 			n, ok := c.nodes[key]
 			if !ok {
 				n = newCacheNode(c, key, entry.Value())
 				c.nodes[key] = n
 			}
-			nodes = append(nodes, n)
+			nodes[i] = n
 			err := c.unsafeAdjustDependencies(entry)
 			if err != nil {
 				return err
@@ -212,6 +212,34 @@ func (c *Cache[K, V]) Recompute(ctx context.Context, keys ...K) error {
 	}
 
 	return c.graph.Stabilize(ctx)
+}
+
+// Keys returns all the keys in the cache.
+func (c *Cache[K, V]) Keys() []K {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	keys := make([]K, len(c.nodes))
+	i := 0
+	for key := range c.nodes {
+		keys[i] = key
+		i++
+	}
+	return keys
+}
+
+// Values returns all the values in the cache.
+func (c *Cache[K, V]) Values() []Value[K, V] {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	values := make([]Value[K, V], len(c.nodes))
+	i := 0
+	for _, node := range c.nodes {
+		values[i] = node
+		i++
+	}
+	return values
 }
 
 // Clear removes all entries from the cache.

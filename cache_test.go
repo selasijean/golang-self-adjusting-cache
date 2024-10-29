@@ -419,3 +419,47 @@ func TestCache_Parallel_Recompute(t *testing.T) {
 		require.Equal(t, key.t, cached.Value())
 	}
 }
+
+func TestCache_Keys(t *testing.T) {
+	var evaluator *testEvaluator
+	valueFn := func(ctx context.Context, key cacheKey) (Entry[cacheKey, int], error) {
+		return evaluator.identityFn(ctx, key)
+	}
+
+	cache := New(valueFn)
+	ctx := context.Background()
+	evaluator = newEvaluator(cache)
+
+	maxT := 10
+	_, err := evaluator.identityFn(ctx, fnKey(maxT))
+	require.NoError(t, err)
+
+	keys := cache.Keys()
+	require.Equal(t, maxT+1, len(keys))
+	for i := 0; i <= maxT; i++ {
+		require.Contains(t, keys, fnKey(i))
+	}
+}
+
+func TestCache_Values(t *testing.T) {
+	var evaluator *testEvaluator
+	valueFn := func(ctx context.Context, key cacheKey) (Entry[cacheKey, int], error) {
+		return evaluator.identityFn(ctx, key)
+	}
+
+	cache := New(valueFn)
+	ctx := context.Background()
+	evaluator = newEvaluator(cache)
+
+	maxT := 10
+	_, err := evaluator.identityFn(ctx, fnKey(maxT))
+	require.NoError(t, err)
+
+	values := cache.Values()
+	require.Equal(t, maxT+1, len(values))
+	for i := 0; i <= maxT; i++ {
+		value := values[i]
+		expected := value.Key().t
+		require.Equal(t, expected, value.Value())
+	}
+}
