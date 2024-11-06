@@ -59,7 +59,7 @@ func OptPreallocateSize(size int) func(*CacheOptions) {
 // If not provided, the default height is 20000.
 func OptMaxHeightOfDependencyGraph(size int) func(*CacheOptions) {
 	return func(c *CacheOptions) {
-		c.MaxHeightOfDependencyGraph = size * 2
+		c.MaxHeightOfDependencyGraph = size
 	}
 }
 
@@ -93,9 +93,7 @@ type CacheOptions struct {
 
 type CacheOption func(*CacheOptions)
 
-// Cache is a generic interface for an online cache that can be used to store and retrieve values and that can automatically
-// recompute cache entries when their dependencies in the cache are updated.
-type Cache[K comparable, V any] struct {
+type cache[K comparable, V any] struct {
 	opts              []CacheOption
 	graph             *incr.Graph
 	nodes             map[K]*cacheNode[K, V]
@@ -109,8 +107,7 @@ type Cache[K comparable, V any] struct {
 	stabilizationMu sync.Mutex
 }
 
-// New creates a new cache with the given value function and options.
-func New[K comparable, V any](valueFn func(ctx context.Context, key K) (Entry[K, V], error), opts ...CacheOption) *Cache[K, V] {
+func New[K comparable, V any](valueFn func(ctx context.Context, key K) (Entry[K, V], error), opts ...CacheOption) Cache[K, V] {
 	if valueFn == nil {
 		panic("valueFn is not set")
 	}
@@ -120,7 +117,7 @@ func New[K comparable, V any](valueFn func(ctx context.Context, key K) (Entry[K,
 		opt(&options)
 	}
 
-	return &Cache[K, V]{
+	return &cache[K, V]{
 		nodes:             make(map[K]*cacheNode[K, V], options.PreallocateCacheSize),
 		graph:             createIncrGraph(options),
 		valueFn:           valueFn,
@@ -130,8 +127,7 @@ func New[K comparable, V any](valueFn func(ctx context.Context, key K) (Entry[K,
 	}
 }
 
-// Get returns the value of the given key if it is in the cache, and a boolean indicating whether the key was found.
-func (c *Cache[K, V]) Get(key K) (Value[K, V], bool) {
+func (c *cache[K, V]) Get(key K) (Value[K, V], bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -143,8 +139,7 @@ func (c *Cache[K, V]) Get(key K) (Value[K, V], bool) {
 	return node, ok
 }
 
-// Put adds the given entries to the cache.
-func (c *Cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
+func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
 	nodes := make([]*cacheNode[K, V], len(entries))
 
 	err := withWriteLock(&c.mu, func() error {
@@ -190,8 +185,7 @@ func (c *Cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
 	return nil
 }
 
-// Recompute re-evaluates the values of the given keys using the value function provided to the cache.
-func (c *Cache[K, V]) Recompute(ctx context.Context, keys ...K) error {
+func (c *cache[K, V]) Recompute(ctx context.Context, keys ...K) error {
 	c.stabilizationMu.Lock()
 	defer c.stabilizationMu.Unlock()
 
@@ -216,8 +210,7 @@ func (c *Cache[K, V]) Recompute(ctx context.Context, keys ...K) error {
 	return c.graph.Stabilize(ctx)
 }
 
-// Keys returns all the keys in the cache.
-func (c *Cache[K, V]) Keys() []K {
+func (c *cache[K, V]) Keys() []K {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -230,8 +223,7 @@ func (c *Cache[K, V]) Keys() []K {
 	return keys
 }
 
-// Values returns all the values in the cache.
-func (c *Cache[K, V]) Values() []Value[K, V] {
+func (c *cache[K, V]) Values() []Value[K, V] {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -244,8 +236,7 @@ func (c *Cache[K, V]) Values() []Value[K, V] {
 	return values
 }
 
-// Clear removes all entries from the cache.
-func (c *Cache[K, V]) Clear(ctx context.Context) {
+func (c *cache[K, V]) Clear(ctx context.Context) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -274,8 +265,7 @@ func (c *Cache[K, V]) Clear(ctx context.Context) {
 	c.graph = createIncrGraph(options)
 }
 
-// Purge removes the given keys and all dependent keys from the cache.
-func (c *Cache[K, V]) Purge(ctx context.Context, keys ...K) {
+func (c *cache[K, V]) Purge(ctx context.Context, keys ...K) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -318,16 +308,14 @@ func (c *Cache[K, V]) Purge(ctx context.Context, keys ...K) {
 	}
 }
 
-// Len returns the number of entries in the cache.
-func (c *Cache[K, V]) Len() int {
+func (c *cache[K, V]) Len() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	return len(c.nodes)
 }
 
-// Copy creates a deep copy of the cache.
-func (c *Cache[K, V]) Copy(ctx context.Context) (*Cache[K, V], error) {
+func (c *cache[K, V]) Copy(ctx context.Context) (Cache[K, V], error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -336,7 +324,7 @@ func (c *Cache[K, V]) Copy(ctx context.Context) (*Cache[K, V], error) {
 		opt(&options)
 	}
 
-	copy := &Cache[K, V]{
+	copy := &cache[K, V]{
 		nodes:             make(map[K]*cacheNode[K, V], options.PreallocateCacheSize),
 		graph:             createIncrGraph(options),
 		valueFn:           c.valueFn,
@@ -363,11 +351,7 @@ func (c *Cache[K, V]) Copy(ctx context.Context) (*Cache[K, V], error) {
 	return copy, nil
 }
 
-// WithWriteBackFn sets the write back function for the cache
-//
-// The write back function is called when the value of a key is updated
-// and is useful when the value of a key is computed and then stored in an external database or service.
-func (c *Cache[K, V]) WithWriteBackFn(fn func(ctx context.Context, key K, value V) error) *Cache[K, V] {
+func (c *cache[K, V]) WithWriteBackFn(fn func(ctx context.Context, key K, value V) error) Cache[K, V] {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -376,7 +360,7 @@ func (c *Cache[K, V]) WithWriteBackFn(fn func(ctx context.Context, key K, value 
 }
 
 // WithParallelism sets whether the cache should use parallelism when recomputing values.
-func (c *Cache[K, V]) WithParallelism(enabled bool) *Cache[K, V] {
+func (c *cache[K, V]) WithParallelism(enabled bool) Cache[K, V] {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -384,8 +368,7 @@ func (c *Cache[K, V]) WithParallelism(enabled bool) *Cache[K, V] {
 	return c
 }
 
-// WithCutoffFn sets the cutoff function for the cache.
-func (c *Cache[K, V]) WithCutoffFn(fn func(ctx context.Context, previous V, current V) (bool, error)) *Cache[K, V] {
+func (c *cache[K, V]) WithCutoffFn(fn func(ctx context.Context, previous V, current V) (bool, error)) Cache[K, V] {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -393,14 +376,14 @@ func (c *Cache[K, V]) WithCutoffFn(fn func(ctx context.Context, previous V, curr
 	return c
 }
 
-func (c *Cache[K, V]) maybeAdjustDependencies(entry Entry[K, V]) error {
+func (c *cache[K, V]) maybeAdjustDependencies(entry Entry[K, V]) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	return c.unsafeAdjustDependencies(entry)
 }
 
-func (c *Cache[K, V]) unsafeAdjustDependencies(entry Entry[K, V]) error {
+func (c *cache[K, V]) unsafeAdjustDependencies(entry Entry[K, V]) error {
 	key := entry.Key()
 	node, ok := c.nodes[key]
 	if !ok {

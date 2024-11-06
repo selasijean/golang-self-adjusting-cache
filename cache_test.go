@@ -17,10 +17,10 @@ func fnKey(t int) cacheKey {
 }
 
 type testEvaluator struct {
-	cache *Cache[cacheKey, int]
+	cache Cache[cacheKey, int]
 }
 
-func newEvaluator(cache *Cache[cacheKey, int]) *testEvaluator {
+func newEvaluator(cache Cache[cacheKey, int]) *testEvaluator {
 	return &testEvaluator{
 		cache: cache,
 	}

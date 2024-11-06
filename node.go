@@ -30,7 +30,7 @@ type cacheNode[K comparable, V any] struct {
 	mu               sync.RWMutex
 }
 
-func newCacheNode[K comparable, V any](c *Cache[K, V], key K, value V) *cacheNode[K, V] {
+func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V) *cacheNode[K, V] {
 	graph := c.graph
 	n := &cacheNode[K, V]{
 		graph:        graph,
