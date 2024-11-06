@@ -16,10 +16,14 @@ type Value[K comparable, V any] interface {
 type Entry[K comparable, V any] interface {
 	// Dependencies returns the dependencies of the cache entry.
 	Dependencies() []K
-	// Key returns the key of the cache entry
+	// Key returns the key of the cache entry.
 	Key() K
-	// Value returns the value of the entry
+	// Value returns the value of the entry.
 	Value() V
+	// SetMetadata sets the metadata for the entry.
+	SetMetadata(data any)
+	// Metadata returns the metadata for the entry.
+	Metadata() any
 }
 
 type Cache[K comparable, V any] interface {

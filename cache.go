@@ -10,9 +10,10 @@ import (
 )
 
 type entry[K comparable, V any] struct {
-	key   K
-	value V
-	deps  []K
+	key      K
+	value    V
+	deps     []K
+	metadata any
 }
 
 func (e *entry[K, V]) Key() K {
@@ -25,6 +26,14 @@ func (e *entry[K, V]) Value() V {
 
 func (e *entry[K, V]) Dependencies() []K {
 	return e.deps
+}
+
+func (e *entry[K, V]) SetMetadata(data any) {
+	e.metadata = data
+}
+
+func (e *entry[K, V]) Metadata() any {
+	return e.metadata
 }
 
 // NewEntry creates a cache entry with the given key, value, and dependencies.
@@ -159,6 +168,7 @@ func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
 			if err != nil {
 				return err
 			}
+			n.SetMetadata(entry.Metadata())
 		}
 		return nil
 	})

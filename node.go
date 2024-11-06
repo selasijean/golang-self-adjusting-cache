@@ -28,6 +28,8 @@ type cacheNode[K comparable, V any] struct {
 	onUpdateHandlers []func(context.Context)
 	onPurgedHandlers []func(context.Context)
 	mu               sync.RWMutex
+
+	metadata any
 }
 
 func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V) *cacheNode[K, V] {
@@ -143,6 +145,20 @@ func (n *cacheNode[K, V]) DirectDependents() []K {
 	defer n.mu.RUnlock()
 
 	return findDirectDependents[K, V](n.incremental)
+}
+
+func (n *cacheNode[K, V]) Metadata() any {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	return n.metadata
+}
+
+func (n *cacheNode[K, V]) SetMetadata(data any) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.metadata = data
 }
 
 func (n *cacheNode[K, V]) Height() int {
