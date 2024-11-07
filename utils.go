@@ -104,8 +104,8 @@ func remove[K comparable](keys []K, key K) (output []K, removed bool) {
 	return
 }
 
-func sortByHeight[K comparable, V any](nodes []*cacheNode[K, V]) {
+func sortByHeight[K comparable, V any](nodes []Value[K, V]) {
 	sort.SliceStable(nodes, func(i, j int) bool {
-		return nodes[i].Height() < nodes[j].Height()
+		return nodes[i].TopSortOrder() < nodes[j].TopSortOrder()
 	})
 }

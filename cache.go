@@ -243,6 +243,7 @@ func (c *cache[K, V]) Values() []Value[K, V] {
 		values[i] = node
 		i++
 	}
+
 	return values
 }
 
@@ -343,7 +344,7 @@ func (c *cache[K, V]) Copy(ctx context.Context) (Cache[K, V], error) {
 		opts:              c.opts,
 	}
 
-	nodes := make([]*cacheNode[K, V], len(c.nodes))
+	nodes := make([]Value[K, V], len(c.nodes))
 	i := 0
 	for _, node := range c.nodes {
 		nodes[i] = node

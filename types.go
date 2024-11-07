@@ -3,6 +3,8 @@ package cache
 import "context"
 
 type Value[K comparable, V any] interface {
+	// TopSortOrder returns the topological sort order of the value.
+	TopSortOrder() int
 	Entry[K, V]
 	// OnUpdate registers a callback that is called when the value is updated.
 	OnUpdate(fn func(context.Context))

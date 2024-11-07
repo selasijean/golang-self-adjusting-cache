@@ -161,7 +161,7 @@ func (n *cacheNode[K, V]) SetMetadata(data any) {
 	n.metadata = data
 }
 
-func (n *cacheNode[K, V]) Height() int {
+func (n *cacheNode[K, V]) TopSortOrder() int {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
