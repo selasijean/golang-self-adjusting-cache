@@ -13,9 +13,8 @@ type cacheNode[K comparable, V any] struct {
 	dependencies []K
 	key          K
 
-	tempValue  V
+	value      *V
 	useValueFn bool
-	valid      bool
 
 	graph *incr.Graph
 
@@ -37,10 +36,9 @@ func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V) *cacheNod
 	n := &cacheNode[K, V]{
 		graph:        graph,
 		key:          key,
-		tempValue:    value,
+		value:        &value,
 		useValueFn:   false,
 		dependencies: make([]K, 0),
-		valid:        true,
 	}
 
 	n.cutoffFn = func(ctx context.Context, previous, current V) (bool, error) {
@@ -62,21 +60,20 @@ func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V) *cacheNod
 			}
 		}()
 
-		if !n.useValueFn {
-			result = n.tempValue
+		if !n.useValueFn && n.value != nil {
+			result = *n.value
 			return
 		}
 
-		// if cache.Get(key) is called within the valueFn, n.invalid enables us to invalidate cached value for the given key
-		n.valid = false
+		// if cache.Get(key) is called within the valueFn, n.hasValue enables us to invalidate cached value for the given key
+		n.value = nil
 		val, err := c.valueFn(ctx, key)
 		if err != nil {
 			return zero, err
 		}
-		n.valid = true
 
 		result = val.Value()
-		n.tempValue = result
+		n.value = &result
 
 		// reevaluating valueFn may change the dependencies of the node so we may need to update the graph
 		err = c.maybeAdjustDependencies(val)
@@ -126,8 +123,8 @@ func (n *cacheNode[K, V]) Value() V {
 		return zero
 	}
 
-	if n.graph.IsStabilizing() {
-		return n.tempValue
+	if n.graph.IsStabilizing() && n.value != nil {
+		return *n.value
 	}
 
 	return n.incremental.Value()
@@ -223,7 +220,7 @@ func (n *cacheNode[K, V]) setInitialValue(value V) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	n.tempValue = value
+	n.value = &value
 	n.useValueFn = false
 
 	n.unsafeMarkAsStale()
@@ -291,5 +288,5 @@ func (n *cacheNode[K, V]) isValid() bool {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
-	return n.valid
+	return n.value != nil
 }
