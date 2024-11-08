@@ -204,7 +204,7 @@ func TestCache_WithCutoff(t *testing.T) {
 		return evaluator.identityFn(ctx, key)
 	}
 
-	cutoffFn := func(ctx context.Context, previous int, current int) (bool, error) {
+	cutoffFn := func(ctx context.Context, key cacheKey, previous, current int) (bool, error) {
 		return previous == current, nil
 	}
 

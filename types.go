@@ -48,7 +48,7 @@ type Cache[K comparable, V any] interface {
 	// Values returns all the values in the cache.
 	Values() []Value[K, V]
 	// WithCutoffFn sets the cutoff function for the cache.
-	WithCutoffFn(fn func(ctx context.Context, previous V, current V) (bool, error)) Cache[K, V]
+	WithCutoffFn(fn func(ctx context.Context, key K, previous, current V) (bool, error)) Cache[K, V]
 	// WithParallelism sets whether the cache should use parallelism when recomputing values.
 	WithParallelism(enabled bool) Cache[K, V]
 	// WithWriteBackFn sets the write back function for the cache

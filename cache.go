@@ -108,7 +108,7 @@ type cache[K comparable, V any] struct {
 	nodes             map[K]*cacheNode[K, V]
 	valueFn           func(ctx context.Context, key K) (Entry[K, V], error)
 	writeBackFn       func(ctx context.Context, key K, value V) error
-	cutoffFn          func(ctx context.Context, previous V, current V) (bool, error)
+	cutoffFn          func(ctx context.Context, key K, previous, current V) (bool, error)
 	enableParallelism bool
 	parallelism       int
 
@@ -379,7 +379,7 @@ func (c *cache[K, V]) WithParallelism(enabled bool) Cache[K, V] {
 	return c
 }
 
-func (c *cache[K, V]) WithCutoffFn(fn func(ctx context.Context, previous V, current V) (bool, error)) Cache[K, V] {
+func (c *cache[K, V]) WithCutoffFn(fn func(ctx context.Context, key K, previous, current V) (bool, error)) Cache[K, V] {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

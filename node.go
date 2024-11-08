@@ -22,8 +22,6 @@ type cacheNode[K comparable, V any] struct {
 	valueFnIncr  incr.MapNIncr[V, V]
 	observedIncr incr.ObserveIncr[V]
 
-	cutoffFn func(context.Context, V, V) (bool, error)
-
 	onUpdateHandlers []func(context.Context)
 	onPurgedHandlers []func(context.Context)
 	mu               sync.RWMutex
@@ -41,11 +39,11 @@ func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V) *cacheNod
 		dependencies: make([]K, 0),
 	}
 
-	n.cutoffFn = func(ctx context.Context, previous, current V) (bool, error) {
+	cutoffFn := func(ctx context.Context, previous, current V) (bool, error) {
 		if c.cutoffFn == nil {
 			return false, nil
 		}
-		return c.cutoffFn(ctx, previous, current)
+		return c.cutoffFn(ctx, key, previous, current)
 	}
 
 	incrs := make([]incr.Incr[V], 0, len(n.dependencies))
@@ -97,7 +95,7 @@ func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V) *cacheNod
 		n.useValueFn = true
 	})
 
-	n.incremental = incr.CutoffContext(graph, n.valueFnIncr, n.cutoffFn)
+	n.incremental = incr.CutoffContext(graph, n.valueFnIncr, cutoffFn)
 	n.incremental.Node().OnUpdate(func(ctx context.Context) {
 		for _, handler := range n.onUpdateHandlers {
 			handler(ctx)
