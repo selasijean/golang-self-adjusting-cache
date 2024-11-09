@@ -2,46 +2,39 @@ package cache
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/wcharczuk/go-incr"
 )
 
 type entry[K comparable, V any] struct {
-	key      K
-	value    V
-	deps     []K
-	metadata any
+	K    K   `json:"key"`
+	V    V   `json:"value"`
+	Deps []K `json:"dependencies"`
 }
 
 func (e *entry[K, V]) Key() K {
-	return e.key
+	return e.K
 }
 
 func (e *entry[K, V]) Value() V {
-	return e.value
+	return e.V
 }
 
 func (e *entry[K, V]) Dependencies() []K {
-	return e.deps
-}
-
-func (e *entry[K, V]) SetMetadata(data any) {
-	e.metadata = data
-}
-
-func (e *entry[K, V]) Metadata() any {
-	return e.metadata
+	return e.Deps
 }
 
 // NewEntry creates a cache entry with the given key, value, and dependencies.
 func NewEntry[K comparable, V any](key K, value V, deps []K) Entry[K, V] {
 	return &entry[K, V]{
-		key:   key,
-		value: value,
-		deps:  deps,
+		K:    key,
+		V:    value,
+		Deps: deps,
 	}
 }
 
@@ -51,7 +44,7 @@ const (
 )
 
 var DefaultCacheOptions = CacheOptions{
-	MaxHeightOfDependencyGraph: DefaultMaxHeight * 4,
+	MaxHeightOfDependencyGraph: DefaultMaxHeight,
 }
 
 // OptCachePreallocateNodesSize preallocates the size of the cache
@@ -169,7 +162,6 @@ func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
 			if err != nil {
 				return err
 			}
-			n.SetMetadata(entry.Metadata())
 		}
 		return nil
 	})
@@ -232,14 +224,7 @@ func (c *cache[K, V]) Values() []Value[K, V] {
 	c.nodesMu.RLock()
 	defer c.nodesMu.RUnlock()
 
-	values := make([]Value[K, V], len(c.nodes))
-	i := 0
-	for _, node := range c.nodes {
-		values[i] = node
-		i++
-	}
-
-	return values
+	return c.unsafeGetValues()
 }
 
 func (c *cache[K, V]) Clear(ctx context.Context) {
@@ -380,6 +365,54 @@ func (c *cache[K, V]) WithCutoffFn(fn func(ctx context.Context, key K, previous,
 
 	c.cutoffFn = fn
 	return c
+}
+
+func (c *cache[K, V]) MarshalJSON() ([]byte, error) {
+	c.nodesMu.RLock()
+	defer c.nodesMu.RUnlock()
+
+	values := c.unsafeGetValues()
+	sortByHeight(values)
+
+	items := make([]string, 0, len(values))
+	for _, v := range values {
+		entry := NewEntry(v.Key(), v.Value(), v.Dependencies())
+		b, err := json.Marshal(entry)
+		if err != nil {
+			return nil, err
+		}
+
+		items = append(items, string(b))
+	}
+
+	return []byte(fmt.Sprintf("[%s]", strings.Join(items, ","))), nil
+}
+
+func (c *cache[K, V]) UnmarshalJSON(b []byte) error {
+	var entries []*entry[K, V]
+	err := json.Unmarshal(b, &entries)
+	if err != nil {
+		return err
+	}
+
+	for _, e := range entries {
+		err := c.Put(context.Background(), e)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *cache[K, V]) unsafeGetValues() []Value[K, V] {
+	values := make([]Value[K, V], len(c.nodes))
+	i := 0
+	for _, node := range c.nodes {
+		values[i] = node
+		i++
+	}
+
+	return values
 }
 
 func (c *cache[K, V]) maybeAdjustDependencies(node *cacheNode[K, V], newDeps []K) error {

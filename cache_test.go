@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"fmt"
 	"runtime"
 	"testing"
 
@@ -486,6 +487,49 @@ func TestCache_Copy(t *testing.T) {
 
 	for _, key := range original.Keys() {
 		cached, ok := original.Get(key)
+		require.True(t, ok)
+		copyCached, ok := copy.Get(key)
+		require.True(t, ok)
+		require.Equal(t, cached.Value(), copyCached.Value())
+	}
+}
+
+type testKey struct {
+	Key int
+}
+
+type testValue struct {
+	Value string
+}
+
+func TestCache_MarshalUnmarshalJSON(t *testing.T) {
+	valueFn := func(ctx context.Context, key testKey) (Entry[testKey, testValue], error) {
+		return NewEntry(key, testValue{Value: fmt.Sprintf("val-%d", key.Key)}, nil), nil
+	}
+
+	cache := New(valueFn)
+	ctx := context.Background()
+
+	for i := 0; i < 10; i++ {
+		val, err := valueFn(ctx, testKey{Key: i})
+		require.NoError(t, err)
+		err = cache.Put(ctx, val)
+		require.NoError(t, err)
+	}
+
+	b, err := cache.MarshalJSON()
+	jsonStr := string(b)
+	require.NotEmpty(t, jsonStr)
+	require.NoError(t, err)
+
+	copy := New(valueFn)
+	err = copy.UnmarshalJSON(b)
+	require.NoError(t, err)
+
+	require.Equal(t, cache.Len(), copy.Len())
+
+	for _, key := range cache.Keys() {
+		cached, ok := cache.Get(key)
 		require.True(t, ok)
 		copyCached, ok := copy.Get(key)
 		require.True(t, ok)

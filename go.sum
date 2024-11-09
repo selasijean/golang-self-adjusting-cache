@@ -4,8 +4,6 @@ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZb
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/stretchr/testify v1.9.0 h1:HtqpIVDClZ4nwg75+f6Lvsy/wHu+3BoSGCbBAcpTsTg=
 github.com/stretchr/testify v1.9.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
-github.com/wcharczuk/go-incr v1.3.2 h1:82/BhqLXBvyWctKcFMw7FgUY8kuMm+tdLmBauLoaqqA=
-github.com/wcharczuk/go-incr v1.3.2/go.mod h1:IQ66WEXaOz/BhlRSoJbbjDbiahPUAeVkn8VPRI5ICys=
 github.com/wcharczuk/go-incr v1.3.3-0.20241027160554-5ed6154cf3e8 h1:idVMZq+bfYUjYfkD4yUo5tKCSc3E8+H2iSb3OCqFLBo=
 github.com/wcharczuk/go-incr v1.3.3-0.20241027160554-5ed6154cf3e8/go.mod h1:IQ66WEXaOz/BhlRSoJbbjDbiahPUAeVkn8VPRI5ICys=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=
