@@ -14,7 +14,7 @@ To summarize, this package provides a cache implementation that offers the follo
 A mini-worked example:
 
 ```go
-import "github.com/selasijean/self-adjusting-cache"
+import "github.com/selasijean/golang-self-adjusting-cache"
 
 ...
 func (e *evaluator) identityFn(ctx context.Context, t int) (Entry[int, int], error) {
