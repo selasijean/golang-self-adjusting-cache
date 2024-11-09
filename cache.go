@@ -112,8 +112,9 @@ type cache[K comparable, V any] struct {
 	enableParallelism bool
 	parallelism       int
 
-	mu              sync.RWMutex
+	nodesMu         sync.RWMutex
 	stabilizationMu sync.Mutex
+	graphMu         sync.Mutex
 }
 
 func New[K comparable, V any](valueFn func(ctx context.Context, key K) (Entry[K, V], error), opts ...CacheOption) Cache[K, V] {
@@ -137,8 +138,8 @@ func New[K comparable, V any](valueFn func(ctx context.Context, key K) (Entry[K,
 }
 
 func (c *cache[K, V]) Get(key K) (Value[K, V], bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.nodesMu.RLock()
+	defer c.nodesMu.RUnlock()
 
 	node, ok := c.nodes[key]
 	if !ok || !node.isValid() {
@@ -151,16 +152,16 @@ func (c *cache[K, V]) Get(key K) (Value[K, V], bool) {
 func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
 	nodes := make([]*cacheNode[K, V], len(entries))
 
-	err := withWriteLock(&c.mu, func() error {
+	err := withWriteLock(&c.nodesMu, func() error {
 		for i, entry := range entries {
-			key, value := entry.Key(), entry.Value()
+			key, value, deps := entry.Key(), entry.Value(), entry.Dependencies()
 			n, ok := c.nodes[key]
 			if !ok {
 				n = newCacheNode(c, key, entry.Value())
 				c.nodes[key] = n
 			}
 			nodes[i] = n
-			err := c.unsafeAdjustDependencies(entry)
+			err := c.unsafeAdjustDependencies(n, deps)
 			if err != nil {
 				return err
 			}
@@ -182,11 +183,12 @@ func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
 			return err
 		}
 
+		// deadlock guard. it is possible for the recomputeFn to use Put, which leads to calling Put during stabilization.
 		if c.graph.IsStabilizing() {
 			return nil
 		}
 
-		err = c.graph.Stabilize(ctx)
+		err = c.stabilize(ctx)
 		if err != nil {
 			return err
 		}
@@ -196,10 +198,7 @@ func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
 }
 
 func (c *cache[K, V]) Recompute(ctx context.Context, keys ...K) error {
-	c.stabilizationMu.Lock()
-	defer c.stabilizationMu.Unlock()
-
-	err := withReadLock(&c.mu, func() error {
+	err := withReadLock(&c.nodesMu, func() error {
 		for _, key := range keys {
 			node, ok := c.nodes[key]
 			if !ok {
@@ -213,16 +212,12 @@ func (c *cache[K, V]) Recompute(ctx context.Context, keys ...K) error {
 		return err
 	}
 
-	if c.enableParallelism {
-		return c.graph.ParallelStabilize(ctx)
-	}
-
-	return c.graph.Stabilize(ctx)
+	return c.stabilize(ctx)
 }
 
 func (c *cache[K, V]) Keys() []K {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.nodesMu.RLock()
+	defer c.nodesMu.RUnlock()
 
 	keys := make([]K, len(c.nodes))
 	i := 0
@@ -234,8 +229,8 @@ func (c *cache[K, V]) Keys() []K {
 }
 
 func (c *cache[K, V]) Values() []Value[K, V] {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.nodesMu.RLock()
+	defer c.nodesMu.RUnlock()
 
 	values := make([]Value[K, V], len(c.nodes))
 	i := 0
@@ -248,8 +243,8 @@ func (c *cache[K, V]) Values() []Value[K, V] {
 }
 
 func (c *cache[K, V]) Clear(ctx context.Context) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.nodesMu.Lock()
+	defer c.nodesMu.Unlock()
 
 	opts := c.opts
 	options := DefaultCacheOptions
@@ -277,8 +272,8 @@ func (c *cache[K, V]) Clear(ctx context.Context) {
 }
 
 func (c *cache[K, V]) Purge(ctx context.Context, keys ...K) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.nodesMu.Lock()
+	defer c.nodesMu.Unlock()
 
 	stack := make([]K, len(keys))
 	copy(stack, keys)
@@ -320,15 +315,15 @@ func (c *cache[K, V]) Purge(ctx context.Context, keys ...K) {
 }
 
 func (c *cache[K, V]) Len() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.nodesMu.RLock()
+	defer c.nodesMu.RUnlock()
 
 	return len(c.nodes)
 }
 
 func (c *cache[K, V]) Copy(ctx context.Context) (Cache[K, V], error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.nodesMu.RLock()
+	defer c.nodesMu.RUnlock()
 
 	options := DefaultCacheOptions
 	for _, opt := range c.opts {
@@ -363,8 +358,8 @@ func (c *cache[K, V]) Copy(ctx context.Context) (Cache[K, V], error) {
 }
 
 func (c *cache[K, V]) WithWriteBackFn(fn func(ctx context.Context, key K, value V) error) Cache[K, V] {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.nodesMu.Lock()
+	defer c.nodesMu.Unlock()
 
 	c.writeBackFn = fn
 	return c
@@ -372,38 +367,30 @@ func (c *cache[K, V]) WithWriteBackFn(fn func(ctx context.Context, key K, value 
 
 // WithParallelism sets whether the cache should use parallelism when recomputing values.
 func (c *cache[K, V]) WithParallelism(enabled bool) Cache[K, V] {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.nodesMu.Lock()
+	defer c.nodesMu.Unlock()
 
 	c.enableParallelism = enabled
 	return c
 }
 
 func (c *cache[K, V]) WithCutoffFn(fn func(ctx context.Context, key K, previous, current V) (bool, error)) Cache[K, V] {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.nodesMu.Lock()
+	defer c.nodesMu.Unlock()
 
 	c.cutoffFn = fn
 	return c
 }
 
-func (c *cache[K, V]) maybeAdjustDependencies(entry Entry[K, V]) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (c *cache[K, V]) maybeAdjustDependencies(node *cacheNode[K, V], newDeps []K) error {
+	c.nodesMu.RLock()
+	defer c.nodesMu.RUnlock()
 
-	return c.unsafeAdjustDependencies(entry)
+	return c.unsafeAdjustDependencies(node, newDeps)
 }
 
-func (c *cache[K, V]) unsafeAdjustDependencies(entry Entry[K, V]) error {
-	key := entry.Key()
-	node, ok := c.nodes[key]
-	if !ok {
-		return fmt.Errorf("node not found for key: %v", key)
-	}
-
+func (c *cache[K, V]) unsafeAdjustDependencies(node *cacheNode[K, V], newDeps []K) error {
 	oldDeps := node.dependencies
-	newDeps := entry.Dependencies()
-
 	added := difference(newDeps, oldDeps)
 	removed := difference(oldDeps, newDeps)
 
@@ -430,4 +417,14 @@ func (c *cache[K, V]) unsafeAdjustDependencies(entry Entry[K, V]) error {
 	}
 
 	return nil
+}
+
+func (c *cache[K, V]) stabilize(ctx context.Context) error {
+	c.stabilizationMu.Lock()
+	defer c.stabilizationMu.Unlock()
+
+	if c.enableParallelism {
+		return c.graph.ParallelStabilize(ctx)
+	}
+	return c.graph.Stabilize(ctx)
 }

@@ -27,6 +27,7 @@ type cacheNode[K comparable, V any] struct {
 	mu               sync.RWMutex
 
 	metadata any
+	graphMu  *sync.Mutex
 }
 
 func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V) *cacheNode[K, V] {
@@ -37,6 +38,7 @@ func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V) *cacheNod
 		value:        &value,
 		useValueFn:   false,
 		dependencies: make([]K, 0),
+		graphMu:      &c.graphMu,
 	}
 
 	cutoffFn := func(ctx context.Context, previous, current V) (bool, error) {
@@ -74,7 +76,7 @@ func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V) *cacheNod
 		n.value = &result
 
 		// reevaluating valueFn may change the dependencies of the node so we may need to update the graph
-		err = c.maybeAdjustDependencies(val)
+		err = c.maybeAdjustDependencies(n, val.Dependencies())
 		if err != nil {
 			result = zero
 		}
@@ -192,6 +194,9 @@ func (n *cacheNode[K, V]) observe() error {
 
 	graph := n.graph
 	if n.observedIncr == nil {
+		n.graphMu.Lock()
+		defer n.graphMu.Unlock()
+
 		o, err := incr.Observe(graph, n.incremental)
 		if err != nil {
 			return err
@@ -210,6 +215,9 @@ func (n *cacheNode[K, V]) unobserve(ctx context.Context) {
 	if n.observedIncr == nil {
 		return
 	}
+
+	n.graphMu.Lock()
+	defer n.graphMu.Unlock()
 
 	n.observedIncr.Unobserve(ctx)
 }
@@ -242,6 +250,10 @@ func (n *cacheNode[K, V]) addDependency(node *cacheNode[K, V]) error {
 	}
 
 	n.dependencies = append(n.dependencies, node.Key())
+
+	n.graphMu.Lock()
+	defer n.graphMu.Unlock()
+
 	return n.valueFnIncr.AddInput(node.incremental)
 }
 
@@ -264,6 +276,10 @@ func (n *cacheNode[K, V]) removeDependency(node *cacheNode[K, V]) error {
 
 	n.dependencies = deps
 	id := node.incremental.Node().ID()
+
+	n.graphMu.Lock()
+	defer n.graphMu.Unlock()
+
 	return n.valueFnIncr.RemoveInput(id)
 }
 
@@ -275,6 +291,9 @@ func (n *cacheNode[K, V]) markAsStale() {
 }
 
 func (n *cacheNode[K, V]) unsafeMarkAsStale() {
+	n.graphMu.Lock()
+	defer n.graphMu.Unlock()
+
 	if !n.graph.Has(n.valueFnIncr) {
 		return
 	}
