@@ -24,7 +24,6 @@ type cacheNode[K comparable, V any] struct {
 
 	onUpdateHandlers []func(context.Context)
 	onPurgedHandlers []func(context.Context)
-	mu               sync.RWMutex
 
 	metadata any
 	graphMu  *sync.Mutex
@@ -108,16 +107,10 @@ func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V) *cacheNod
 }
 
 func (n *cacheNode[K, V]) Key() K {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-
 	return n.key
 }
 
 func (n *cacheNode[K, V]) Value() V {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-
 	var zero V
 	if n.incremental == nil {
 		return zero
@@ -131,52 +124,27 @@ func (n *cacheNode[K, V]) Value() V {
 }
 
 func (n *cacheNode[K, V]) Dependencies() []K {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-
 	return n.dependencies
 }
 
 func (n *cacheNode[K, V]) DirectDependents() []K {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-
 	return findDirectDependents[K, V](n.incremental)
 }
 
 func (n *cacheNode[K, V]) Metadata() any {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-
 	return n.metadata
 }
 
-func (n *cacheNode[K, V]) SetMetadata(data any) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	n.metadata = data
-}
-
 func (n *cacheNode[K, V]) TopSortOrder() int {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-
 	expertNode := incr.ExpertNode(n.incremental)
 	return expertNode.Height()
 }
 
 func (n *cacheNode[K, V]) OnUpdate(fn func(context.Context)) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
 	n.onUpdateHandlers = append(n.onUpdateHandlers, fn)
 }
 
 func (n *cacheNode[K, V]) OnPurged(fn func(context.Context)) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
 	n.onPurgedHandlers = append(n.onPurgedHandlers, fn)
 }
 
@@ -185,9 +153,6 @@ func (n *cacheNode[K, V]) OnPurged(fn func(context.Context)) {
 //
 
 func (n *cacheNode[K, V]) observe() error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
 	if n.incremental == nil {
 		return nil
 	}
@@ -209,9 +174,6 @@ func (n *cacheNode[K, V]) observe() error {
 }
 
 func (n *cacheNode[K, V]) unobserve(ctx context.Context) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
 	if n.observedIncr == nil {
 		return
 	}
@@ -223,20 +185,14 @@ func (n *cacheNode[K, V]) unobserve(ctx context.Context) {
 }
 
 func (n *cacheNode[K, V]) setInitialValue(value V) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
 	n.value = &value
 	n.useValueFn = false
 
-	n.unsafeMarkAsStale()
+	n.markAsStale()
 	return nil
 }
 
 func (n *cacheNode[K, V]) addDependency(node *cacheNode[K, V]) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
 	if node == nil {
 		return fmt.Errorf("node is nil")
 	}
@@ -258,9 +214,6 @@ func (n *cacheNode[K, V]) addDependency(node *cacheNode[K, V]) error {
 }
 
 func (n *cacheNode[K, V]) removeDependency(node *cacheNode[K, V]) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
 	if node == nil {
 		return fmt.Errorf("node is nil")
 	}
@@ -284,13 +237,6 @@ func (n *cacheNode[K, V]) removeDependency(node *cacheNode[K, V]) error {
 }
 
 func (n *cacheNode[K, V]) markAsStale() {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	n.unsafeMarkAsStale()
-}
-
-func (n *cacheNode[K, V]) unsafeMarkAsStale() {
 	n.graphMu.Lock()
 	defer n.graphMu.Unlock()
 
@@ -302,15 +248,9 @@ func (n *cacheNode[K, V]) unsafeMarkAsStale() {
 }
 
 func (n *cacheNode[K, V]) isValid() bool {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-
 	return n.value != nil
 }
 
 func (n *cacheNode[K, V]) invalidate() {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
 	n.value = nil
 }
