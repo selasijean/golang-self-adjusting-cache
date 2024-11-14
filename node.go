@@ -307,3 +307,10 @@ func (n *cacheNode[K, V]) isValid() bool {
 
 	return n.value != nil
 }
+
+func (n *cacheNode[K, V]) invalidate() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.value = nil
+}

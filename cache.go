@@ -196,6 +196,7 @@ func (c *cache[K, V]) Recompute(ctx context.Context, keys ...K) error {
 			if !ok {
 				return fmt.Errorf("key not found in cache: %v", key)
 			}
+			node.invalidate()
 			node.markAsStale()
 		}
 		return nil
@@ -286,9 +287,7 @@ func (c *cache[K, V]) Purge(ctx context.Context, keys ...K) {
 			continue
 		}
 
-		for _, dep := range node.DirectDependents() {
-			stack = append(stack, dep)
-		}
+		stack = append(stack, node.DirectDependents()...)
 
 		node.unobserve(ctx)
 		delete(c.nodes, key)
