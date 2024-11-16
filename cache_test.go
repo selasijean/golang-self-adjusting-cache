@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -11,6 +12,10 @@ import (
 
 type cacheKey struct {
 	t int
+}
+
+func (k cacheKey) String() string {
+	return strconv.Itoa(k.t)
 }
 
 func fnKey(t int) cacheKey {
@@ -496,6 +501,10 @@ func TestCache_Copy(t *testing.T) {
 
 type testKey struct {
 	Key int
+}
+
+func (k testKey) String() string {
+	return strconv.Itoa(k.Key)
 }
 
 type testValue struct {

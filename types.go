@@ -1,8 +1,10 @@
 package cache
 
-import "context"
+import (
+	"context"
+)
 
-type Value[K comparable, V any] interface {
+type Value[K hashable, V any] interface {
 	// TopSortOrder returns the topological sort order of the value.
 	TopSortOrder() int
 	Entry[K, V]
@@ -15,7 +17,7 @@ type Value[K comparable, V any] interface {
 }
 
 // Entry is a generic interface for an entry in the cache.
-type Entry[K comparable, V any] interface {
+type Entry[K hashable, V any] interface {
 	// Dependencies returns the dependencies of the cache entry.
 	Dependencies() []K
 	// Key returns the key of the cache entry.
@@ -24,7 +26,7 @@ type Entry[K comparable, V any] interface {
 	Value() V
 }
 
-type Cache[K comparable, V any] interface {
+type Cache[K hashable, V any] interface {
 	// Clear removes all entries from the cache.
 	Clear(ctx context.Context)
 	// Copy creates a deep copy of the cache.
