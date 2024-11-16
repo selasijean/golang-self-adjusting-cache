@@ -54,6 +54,8 @@ type Cache[K hashable, V any] interface {
 	// The write back function is called when the value of a key is updated
 	// and is useful when the value of a key is computed and then stored in an external database or service.
 	WithWriteBackFn(fn func(ctx context.Context, key K, value V) error) Cache[K, V]
+	// WithHashFn sets the hash function used by the cache
+	WithHashFn(func(hash string) uintptr) Cache[K, V]
 	// MarshalJSON will marshal the cached into a JSON-based representation.
 	MarshalJSON() ([]byte, error)
 	// UnmarshalJSON will unmarshal a JSON-based byte slice into a full cache datastructure.

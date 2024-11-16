@@ -240,7 +240,8 @@ func (n *cacheNode[K, V]) invalidate() {
 	n.value = nil
 }
 
-func (n *cacheNode[K, V]) purge() {
+func (n *cacheNode[K, V]) purge(ctx context.Context) {
+	n.unobserve(ctx)
 	n.incremental = nil
 	n.observedIncr = nil
 	n.graph = nil
