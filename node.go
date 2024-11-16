@@ -9,7 +9,7 @@ import (
 	"github.com/wcharczuk/go-incr"
 )
 
-type cacheNode[K comparable, V any] struct {
+type cacheNode[K hashable, V any] struct {
 	dependencies []K
 	key          K
 
@@ -29,7 +29,7 @@ type cacheNode[K comparable, V any] struct {
 	graphMu  *sync.Mutex
 }
 
-func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V) *cacheNode[K, V] {
+func newCacheNode[K hashable, V any](c *cache[K, V], key K, value V) *cacheNode[K, V] {
 	graph := c.graph
 	n := &cacheNode[K, V]{
 		graph:        graph,
@@ -75,7 +75,7 @@ func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V) *cacheNod
 		n.value = &result
 
 		// reevaluating valueFn may change the dependencies of the node so we may need to update the graph
-		err = c.maybeAdjustDependencies(n, val.Dependencies())
+		err = c.adjustDependencies(n, val.Dependencies())
 		if err != nil {
 			result = zero
 		}
