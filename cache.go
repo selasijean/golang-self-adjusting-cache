@@ -113,7 +113,6 @@ type cache[K hashable, V any] struct {
 	parallelism       int
 
 	stabilizationMu sync.Mutex
-	graphMu         sync.Mutex
 }
 
 func New[K hashable, V any](valueFn func(ctx context.Context, key K) (Entry[K, V], error), opts ...CacheOption) Cache[K, V] {

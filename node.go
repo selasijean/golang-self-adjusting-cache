@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"sync"
 
 	"github.com/wcharczuk/go-incr"
 )
@@ -26,7 +25,6 @@ type cacheNode[K hashable, V any] struct {
 	onPurgedHandlers []func(context.Context)
 
 	metadata any
-	graphMu  *sync.Mutex
 }
 
 func newCacheNode[K hashable, V any](c *cache[K, V], key K, value V) *cacheNode[K, V] {
@@ -37,7 +35,6 @@ func newCacheNode[K hashable, V any](c *cache[K, V], key K, value V) *cacheNode[
 		value:        &value,
 		useValueFn:   false,
 		dependencies: make([]K, 0),
-		graphMu:      &c.graphMu,
 	}
 
 	cutoffFn := func(ctx context.Context, previous, current V) (bool, error) {
@@ -159,9 +156,6 @@ func (n *cacheNode[K, V]) observe() error {
 
 	graph := n.graph
 	if n.observedIncr == nil {
-		n.graphMu.Lock()
-		defer n.graphMu.Unlock()
-
 		o, err := incr.Observe(graph, n.incremental)
 		if err != nil {
 			return err
@@ -177,9 +171,6 @@ func (n *cacheNode[K, V]) unobserve(ctx context.Context) {
 	if n.observedIncr == nil {
 		return
 	}
-
-	n.graphMu.Lock()
-	defer n.graphMu.Unlock()
 
 	n.observedIncr.Unobserve(ctx)
 }
@@ -206,10 +197,6 @@ func (n *cacheNode[K, V]) addDependency(node *cacheNode[K, V]) error {
 	}
 
 	n.dependencies = append(n.dependencies, node.Key())
-
-	n.graphMu.Lock()
-	defer n.graphMu.Unlock()
-
 	return n.valueFnIncr.AddInput(node.incremental)
 }
 
@@ -230,16 +217,10 @@ func (n *cacheNode[K, V]) removeDependency(node *cacheNode[K, V]) error {
 	n.dependencies = deps
 	id := node.incremental.Node().ID()
 
-	n.graphMu.Lock()
-	defer n.graphMu.Unlock()
-
 	return n.valueFnIncr.RemoveInput(id)
 }
 
 func (n *cacheNode[K, V]) markAsStale() {
-	n.graphMu.Lock()
-	defer n.graphMu.Unlock()
-
 	if !n.graph.Has(n.valueFnIncr) {
 		return
 	}
