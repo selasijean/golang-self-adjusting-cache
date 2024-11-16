@@ -273,6 +273,7 @@ func (c *cache[K, V]) Purge(ctx context.Context, keys ...K) {
 		stack = append(stack, node.DirectDependents()...)
 
 		node.unobserve(ctx)
+		node.purge()
 		c.nodes.Del(key.String())
 		seen[key] = true
 		if len(node.onPurgedHandlers) > 0 {

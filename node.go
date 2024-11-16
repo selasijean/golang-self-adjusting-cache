@@ -24,6 +24,8 @@ type cacheNode[K hashable, V any] struct {
 	onUpdateHandlers []func(context.Context)
 	onPurgedHandlers []func(context.Context)
 
+	isAddedToGraph *bool
+
 	metadata any
 }
 
@@ -109,7 +111,7 @@ func (n *cacheNode[K, V]) Key() K {
 
 func (n *cacheNode[K, V]) Value() V {
 	var zero V
-	if n.incremental == nil {
+	if n.incremental == nil || n.graph == nil {
 		return zero
 	}
 
@@ -150,7 +152,7 @@ func (n *cacheNode[K, V]) OnPurged(fn func(context.Context)) {
 //
 
 func (n *cacheNode[K, V]) observe() error {
-	if n.incremental == nil {
+	if n.incremental == nil || n.graph == nil {
 		return nil
 	}
 
@@ -173,6 +175,7 @@ func (n *cacheNode[K, V]) unobserve(ctx context.Context) {
 	}
 
 	n.observedIncr.Unobserve(ctx)
+	n.observedIncr = nil
 }
 
 func (n *cacheNode[K, V]) setInitialValue(value V) error {
@@ -221,7 +224,7 @@ func (n *cacheNode[K, V]) removeDependency(node *cacheNode[K, V]) error {
 }
 
 func (n *cacheNode[K, V]) markAsStale() {
-	if !n.graph.Has(n.valueFnIncr) {
+	if n.graph == nil || !n.isPartOfGraph() {
 		return
 	}
 
@@ -234,4 +237,28 @@ func (n *cacheNode[K, V]) isValid() bool {
 
 func (n *cacheNode[K, V]) invalidate() {
 	n.value = nil
+}
+
+func (n *cacheNode[K, V]) isPartOfGraph() bool {
+	if n.graph == nil {
+		return false
+	}
+
+	if n.isAddedToGraph != nil {
+		return *n.isAddedToGraph
+	}
+
+	isPartOfGraph := n.graph.Has(n.valueFnIncr)
+	if isPartOfGraph {
+		n.isAddedToGraph = &isPartOfGraph
+	}
+
+	return isPartOfGraph
+}
+
+func (n *cacheNode[K, V]) purge() {
+	n.incremental = nil
+	n.observedIncr = nil
+	n.graph = nil
+	n.isAddedToGraph = nil
 }
