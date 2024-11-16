@@ -24,8 +24,6 @@ type cacheNode[K hashable, V any] struct {
 	onUpdateHandlers []func(context.Context)
 	onPurgedHandlers []func(context.Context)
 
-	isAddedToGraph *bool
-
 	metadata any
 }
 
@@ -156,9 +154,8 @@ func (n *cacheNode[K, V]) observe() error {
 		return nil
 	}
 
-	graph := n.graph
 	if n.observedIncr == nil {
-		o, err := incr.Observe(graph, n.incremental)
+		o, err := incr.Observe(n.graph, n.incremental)
 		if err != nil {
 			return err
 		}
@@ -181,6 +178,10 @@ func (n *cacheNode[K, V]) unobserve(ctx context.Context) {
 func (n *cacheNode[K, V]) setInitialValue(value V) error {
 	n.value = &value
 	n.useValueFn = false
+
+	if n.graph == nil || n.graph.IsStabilizing() {
+		return nil
+	}
 
 	n.markAsStale()
 	return nil
@@ -224,7 +225,7 @@ func (n *cacheNode[K, V]) removeDependency(node *cacheNode[K, V]) error {
 }
 
 func (n *cacheNode[K, V]) markAsStale() {
-	if n.graph == nil || !n.isPartOfGraph() {
+	if n.graph == nil || !n.graph.Has(n.valueFnIncr) {
 		return
 	}
 
@@ -239,26 +240,8 @@ func (n *cacheNode[K, V]) invalidate() {
 	n.value = nil
 }
 
-func (n *cacheNode[K, V]) isPartOfGraph() bool {
-	if n.graph == nil {
-		return false
-	}
-
-	if n.isAddedToGraph != nil {
-		return *n.isAddedToGraph
-	}
-
-	isPartOfGraph := n.graph.Has(n.valueFnIncr)
-	if isPartOfGraph {
-		n.isAddedToGraph = &isPartOfGraph
-	}
-
-	return isPartOfGraph
-}
-
 func (n *cacheNode[K, V]) purge() {
 	n.incremental = nil
 	n.observedIncr = nil
 	n.graph = nil
-	n.isAddedToGraph = nil
 }
