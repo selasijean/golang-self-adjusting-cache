@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
-	"sync"
 
 	"github.com/alphadose/haxmap"
 	"github.com/wcharczuk/go-incr"
@@ -105,15 +104,12 @@ type cache[K hashable, V any] struct {
 	opts              []CacheOption
 	graph             *incr.Graph
 	nodes             *haxmap.Map[string, *cacheNode[K, V]]
-	keys              map[K]struct{}
 	valueFn           func(ctx context.Context, key K) (Entry[K, V], error)
 	writeBackFn       func(ctx context.Context, key K, value V) error
 	cutoffFn          func(ctx context.Context, key K, previous, current V) (bool, error)
 	hashFn            func(str string) uintptr
 	enableParallelism bool
 	parallelism       int
-
-	stabilizationMu sync.Mutex
 }
 
 func New[K hashable, V any](valueFn func(ctx context.Context, key K) (Entry[K, V], error), opts ...CacheOption) Cache[K, V] {
@@ -128,7 +124,6 @@ func New[K hashable, V any](valueFn func(ctx context.Context, key K) (Entry[K, V
 
 	return &cache[K, V]{
 		nodes:             haxmap.New[string, *cacheNode[K, V]](uintptr(options.PreallocateCacheSize)),
-		keys:              make(map[K]struct{}, options.PreallocateCacheSize),
 		graph:             createIncrGraph(options),
 		valueFn:           valueFn,
 		enableParallelism: options.EnableParallelism,
@@ -146,20 +141,23 @@ func (c *cache[K, V]) Get(key K) (Value[K, V], bool) {
 	return node, ok
 }
 
-func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
-	nodes := make([]*cacheNode[K, V], len(entries))
-	for i, entry := range entries {
+func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) (err error) {
+	nodes := make([]*cacheNode[K, V], 0, len(entries))
+	for _, entry := range entries {
 		key, value, deps := entry.Key(), entry.Value(), entry.Dependencies()
 		n, ok := c.nodes.Get(key.String())
 		if !ok {
-			n = newCacheNode(c, key, entry.Value())
+			n, err = newCacheNode(c, entry)
+			if err != nil {
+				return err
+			}
 			c.nodes.Set(key.String(), n)
-			c.keys[key] = struct{}{}
-		}
-		nodes[i] = n
-		err := c.adjustDependencies(n, deps)
-		if err != nil {
-			return err
+			nodes = append(nodes, n)
+		} else {
+			err = c.adjustDependencies(n, deps)
+			if err != nil {
+				return err
+			}
 		}
 		err = n.setInitialValue(value)
 		if err != nil {
@@ -168,7 +166,7 @@ func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
 	}
 
 	for _, node := range nodes {
-		err := node.observe()
+		err = node.observe()
 		if err != nil {
 			return err
 		}
@@ -179,7 +177,7 @@ func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
 		return nil
 	}
 
-	err := c.stabilize(ctx)
+	err = c.graph.Stabilize(ctx)
 	if err != nil {
 		return err
 	}
@@ -197,13 +195,17 @@ func (c *cache[K, V]) Recompute(ctx context.Context, keys ...K) error {
 		node.markAsStale()
 	}
 
-	return c.stabilize(ctx)
+	if c.enableParallelism {
+		return c.graph.ParallelStabilize(ctx)
+	}
+	return c.graph.Stabilize(ctx)
 }
 
 func (c *cache[K, V]) Keys() []K {
-	keys := make([]K, 0, len(c.keys))
-	for k := range c.keys {
-		keys = append(keys, k)
+	values := c.Values()
+	keys := make([]K, 0, len(values))
+	for _, v := range values {
+		keys = append(keys, v.Key())
 	}
 	return keys
 }
@@ -246,7 +248,6 @@ func (c *cache[K, V]) Clear(ctx context.Context) {
 
 	c.nodes = haxmap.New[string, *cacheNode[K, V]](uintptr(options.PreallocateCacheSize))
 	c.graph = createIncrGraph(options)
-	c.keys = make(map[K]struct{}, options.PreallocateCacheSize)
 }
 
 func (c *cache[K, V]) Purge(ctx context.Context, keys ...K) {
@@ -279,7 +280,6 @@ func (c *cache[K, V]) Purge(ctx context.Context, keys ...K) {
 		stack = append(stack, node.DirectDependents()...)
 		node.purge(ctx)
 		c.nodes.Del(key.String())
-		delete(c.keys, key)
 		seen[key] = true
 		if len(node.onPurgedHandlers) > 0 {
 			handlersAfterPurge[key] = append(handlersAfterPurge[key], node.onPurgedHandlers...)
@@ -302,6 +302,11 @@ func (c *cache[K, V]) Copy(ctx context.Context) (Cache[K, V], error) {
 		nodesMap.SetHasher(c.hashFn)
 	}
 
+	keysMap := haxmap.New[string, K](uintptr(options.PreallocateCacheSize))
+	if c.hashFn != nil {
+		keysMap.SetHasher(c.hashFn)
+	}
+
 	copy := &cache[K, V]{
 		nodes:             nodesMap,
 		graph:             createIncrGraph(options),
@@ -312,7 +317,6 @@ func (c *cache[K, V]) Copy(ctx context.Context) (Cache[K, V], error) {
 		enableParallelism: c.enableParallelism,
 		parallelism:       c.parallelism,
 		opts:              c.opts,
-		keys:              make(map[K]struct{}, options.PreallocateCacheSize),
 	}
 
 	nodes := make([]Value[K, V], c.nodes.Len())
@@ -420,14 +424,4 @@ func (c *cache[K, V]) adjustDependencies(node *cacheNode[K, V], newDeps []K) err
 	}
 
 	return nil
-}
-
-func (c *cache[K, V]) stabilize(ctx context.Context) error {
-	c.stabilizationMu.Lock()
-	defer c.stabilizationMu.Unlock()
-
-	if c.enableParallelism {
-		return c.graph.ParallelStabilize(ctx)
-	}
-	return c.graph.Stabilize(ctx)
 }

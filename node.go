@@ -27,24 +27,26 @@ type cacheNode[K hashable, V any] struct {
 	metadata any
 }
 
-func newCacheNode[K hashable, V any](c *cache[K, V], key K, value V) *cacheNode[K, V] {
+func newCacheNode[K hashable, V any](c *cache[K, V], entry Entry[K, V]) (*cacheNode[K, V], error) {
 	graph := c.graph
+	key, value, deps := entry.Key(), entry.Value(), entry.Dependencies()
 	n := &cacheNode[K, V]{
 		graph:        graph,
 		key:          key,
 		value:        &value,
 		useValueFn:   false,
-		dependencies: make([]K, 0),
-	}
-
-	cutoffFn := func(ctx context.Context, previous, current V) (bool, error) {
-		if c.cutoffFn == nil {
-			return false, nil
-		}
-		return c.cutoffFn(ctx, key, previous, current)
+		dependencies: deps,
 	}
 
 	incrs := make([]incr.Incr[V], 0, len(n.dependencies))
+	for _, dep := range n.dependencies {
+		node, ok := c.nodes.Get(dep.String())
+		if !ok {
+			return nil, fmt.Errorf("dependency not found: %v", dep)
+		}
+		incrs = append(incrs, node.incremental)
+	}
+
 	n.valueFnIncr = incr.MapNContext(graph, func(ctx context.Context, values ...V) (result V, err error) {
 		var zero V
 		defer func() {
@@ -93,6 +95,13 @@ func newCacheNode[K hashable, V any](c *cache[K, V], key K, value V) *cacheNode[
 		n.useValueFn = true
 	})
 
+	cutoffFn := func(ctx context.Context, previous, current V) (bool, error) {
+		if c.cutoffFn == nil {
+			return false, nil
+		}
+		return c.cutoffFn(ctx, key, previous, current)
+	}
+
 	n.incremental = incr.CutoffContext(graph, n.valueFnIncr, cutoffFn)
 	n.incremental.Node().OnUpdate(func(ctx context.Context) {
 		for _, handler := range n.onUpdateHandlers {
@@ -100,7 +109,7 @@ func newCacheNode[K hashable, V any](c *cache[K, V], key K, value V) *cacheNode[
 		}
 	})
 	n.incremental.Node().SetMetadata(n)
-	return n
+	return n, nil
 }
 
 func (n *cacheNode[K, V]) Key() K {

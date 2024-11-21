@@ -71,7 +71,7 @@ func difference[K hashable](a, b []K) []K {
 		return a
 	}
 
-	var diff []K = make([]K, 0, len(a))
+	var diff []K = make([]K, 0)
 	for _, item := range a {
 		found := false
 		for _, bItem := range b {
