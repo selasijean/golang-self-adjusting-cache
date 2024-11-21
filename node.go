@@ -3,14 +3,13 @@ package cache
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"github.com/wcharczuk/go-incr"
 )
 
 type cacheNode[K hashable, V any] struct {
-	dependencies []K
-	key          K
+	dependencies []*K
+	key          *K
 
 	value      *V
 	useValueFn bool
@@ -23,8 +22,6 @@ type cacheNode[K hashable, V any] struct {
 
 	onUpdateHandlers []func(context.Context)
 	onPurgedHandlers []func(context.Context)
-
-	metadata any
 }
 
 func newCacheNode[K hashable, V any](c *cache[K, V], entry Entry[K, V]) (*cacheNode[K, V], error) {
@@ -32,14 +29,15 @@ func newCacheNode[K hashable, V any](c *cache[K, V], entry Entry[K, V]) (*cacheN
 	key, value, deps := entry.Key(), entry.Value(), entry.Dependencies()
 	n := &cacheNode[K, V]{
 		graph:        graph,
-		key:          key,
+		key:          &key,
 		value:        &value,
 		useValueFn:   false,
-		dependencies: deps,
+		dependencies: toSlicePtr(deps),
 	}
 
 	incrs := make([]incr.Incr[V], 0, len(n.dependencies))
-	for _, dep := range n.dependencies {
+	for i := range n.dependencies {
+		dep := *n.dependencies[i]
 		node, ok := c.nodes.Get(dep.String())
 		if !ok {
 			return nil, fmt.Errorf("dependency not found: %v", dep)
@@ -113,7 +111,7 @@ func newCacheNode[K hashable, V any](c *cache[K, V], entry Entry[K, V]) (*cacheN
 }
 
 func (n *cacheNode[K, V]) Key() K {
-	return n.key
+	return *n.key
 }
 
 func (n *cacheNode[K, V]) Value() V {
@@ -130,15 +128,11 @@ func (n *cacheNode[K, V]) Value() V {
 }
 
 func (n *cacheNode[K, V]) Dependencies() []K {
-	return n.dependencies
+	return fromSlicePtr(n.dependencies)
 }
 
 func (n *cacheNode[K, V]) DirectDependents() []K {
 	return findDirectDependents[K, V](n.incremental)
-}
-
-func (n *cacheNode[K, V]) Metadata() any {
-	return n.metadata
 }
 
 func (n *cacheNode[K, V]) TopSortOrder() int {
@@ -184,8 +178,8 @@ func (n *cacheNode[K, V]) unobserve(ctx context.Context) {
 	n.observedIncr = nil
 }
 
-func (n *cacheNode[K, V]) setInitialValue(value V) error {
-	n.value = &value
+func (n *cacheNode[K, V]) setInitialValue(value *V) error {
+	n.value = value
 	n.useValueFn = false
 
 	if n.graph == nil || n.graph.IsStabilizing() {
@@ -205,11 +199,11 @@ func (n *cacheNode[K, V]) addDependency(node *cacheNode[K, V]) error {
 		return fmt.Errorf("node has no incremental: %v", node.Key())
 	}
 
-	if slices.Contains(n.dependencies, node.Key()) {
+	if contains(n.dependencies, node.key) {
 		return nil
 	}
 
-	n.dependencies = append(n.dependencies, node.Key())
+	n.dependencies = append(n.dependencies, node.key)
 	return n.valueFnIncr.AddInput(node.incremental)
 }
 
@@ -222,7 +216,7 @@ func (n *cacheNode[K, V]) removeDependency(node *cacheNode[K, V]) error {
 		return fmt.Errorf("node has no incremental: %v", node.Key())
 	}
 
-	deps, removed := remove(n.dependencies, node.Key())
+	deps, removed := remove(n.dependencies, node.key)
 	if !removed {
 		return nil
 	}

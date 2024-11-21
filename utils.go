@@ -62,20 +62,20 @@ func findDirectDependents[K hashable, V any](node incr.INode) []K {
 }
 
 // difference returns the elements in a that are not in b.
-func difference[K hashable](a, b []K) []K {
+func difference[K hashable](a, b []*K) []*K {
 	if len(a) == 0 {
-		return []K{}
+		return []*K{}
 	}
 
 	if len(b) == 0 {
 		return a
 	}
 
-	var diff []K = make([]K, 0)
+	var diff []*K = make([]*K, 0)
 	for _, item := range a {
 		found := false
 		for _, bItem := range b {
-			if item == bItem {
+			if *item == *bItem {
 				found = true
 				break
 			}
@@ -88,10 +88,10 @@ func difference[K hashable](a, b []K) []K {
 	return diff
 }
 
-func remove[K hashable](keys []K, key K) (output []K, removed bool) {
-	output = make([]K, 0, len(keys))
+func remove[K hashable](keys []*K, key *K) (output []*K, removed bool) {
+	output = make([]*K, 0, len(keys))
 	for _, k := range keys {
-		if k != key {
+		if *k != *key {
 			output = append(output, k)
 		} else {
 			removed = true
@@ -100,8 +100,34 @@ func remove[K hashable](keys []K, key K) (output []K, removed bool) {
 	return
 }
 
+func contains[K hashable](keys []*K, key *K) bool {
+	for _, k := range keys {
+		if *k == *key {
+			return true
+		}
+	}
+	return false
+}
+
 func sortByHeight[K hashable, V any](nodes []Value[K, V]) {
 	sort.SliceStable(nodes, func(i, j int) bool {
 		return nodes[i].TopSortOrder() < nodes[j].TopSortOrder()
 	})
+}
+
+func toSlicePtr[T any](collection []T) []*T {
+	result := make([]*T, len(collection))
+
+	for i := range collection {
+		result[i] = &collection[i]
+	}
+	return result
+}
+
+func fromSlicePtr[T any](collection []*T) []T {
+	result := make([]T, len(collection))
+	for i := range collection {
+		result[i] = *collection[i]
+	}
+	return result
 }

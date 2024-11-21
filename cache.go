@@ -159,7 +159,7 @@ func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) (err erro
 				return err
 			}
 		}
-		err = n.setInitialValue(value)
+		err = n.setInitialValue(&value)
 		if err != nil {
 			return err
 		}
@@ -396,13 +396,15 @@ func (c *cache[K, V]) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-func (c *cache[K, V]) adjustDependencies(node *cacheNode[K, V], newDeps []K) error {
+func (c *cache[K, V]) adjustDependencies(node *cacheNode[K, V], deps []K) error {
 	oldDeps := node.dependencies
+	newDeps := toSlicePtr(deps)
 	added := difference(newDeps, oldDeps)
 	removed := difference(oldDeps, newDeps)
 
 	for _, k := range removed {
-		toBeRemoved, ok := c.nodes.Get(k.String())
+		key := *k
+		toBeRemoved, ok := c.nodes.Get(key.String())
 		if !ok {
 			return fmt.Errorf("dependency not found in cache: %v", k)
 		}
@@ -413,7 +415,8 @@ func (c *cache[K, V]) adjustDependencies(node *cacheNode[K, V], newDeps []K) err
 	}
 
 	for _, k := range added {
-		toBeAdded, ok := c.nodes.Get(k.String())
+		key := *k
+		toBeAdded, ok := c.nodes.Get(key.String())
 		if !ok {
 			return fmt.Errorf("dependency not found in cache: %v", k)
 		}
