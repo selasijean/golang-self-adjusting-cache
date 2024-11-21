@@ -4,12 +4,11 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"sync"
 
 	"github.com/wcharczuk/go-incr"
 )
 
-type cacheNode[K comparable, V any] struct {
+type cacheNode[K hashable, V any] struct {
 	dependencies []K
 	key          K
 
@@ -26,10 +25,9 @@ type cacheNode[K comparable, V any] struct {
 	onPurgedHandlers []func(context.Context)
 
 	metadata any
-	graphMu  *sync.Mutex
 }
 
-func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V) *cacheNode[K, V] {
+func newCacheNode[K hashable, V any](c *cache[K, V], key K, value V) *cacheNode[K, V] {
 	graph := c.graph
 	n := &cacheNode[K, V]{
 		graph:        graph,
@@ -37,7 +35,6 @@ func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V) *cacheNod
 		value:        &value,
 		useValueFn:   false,
 		dependencies: make([]K, 0),
-		graphMu:      &c.graphMu,
 	}
 
 	cutoffFn := func(ctx context.Context, previous, current V) (bool, error) {
@@ -75,7 +72,7 @@ func newCacheNode[K comparable, V any](c *cache[K, V], key K, value V) *cacheNod
 		n.value = &result
 
 		// reevaluating valueFn may change the dependencies of the node so we may need to update the graph
-		err = c.maybeAdjustDependencies(n, val.Dependencies())
+		err = c.adjustDependencies(n, val.Dependencies())
 		if err != nil {
 			result = zero
 		}
@@ -112,7 +109,7 @@ func (n *cacheNode[K, V]) Key() K {
 
 func (n *cacheNode[K, V]) Value() V {
 	var zero V
-	if n.incremental == nil {
+	if n.incremental == nil || n.graph == nil {
 		return zero
 	}
 
@@ -153,16 +150,12 @@ func (n *cacheNode[K, V]) OnPurged(fn func(context.Context)) {
 //
 
 func (n *cacheNode[K, V]) observe() error {
-	if n.incremental == nil {
+	if n.incremental == nil || n.graph == nil {
 		return nil
 	}
 
-	graph := n.graph
 	if n.observedIncr == nil {
-		n.graphMu.Lock()
-		defer n.graphMu.Unlock()
-
-		o, err := incr.Observe(graph, n.incremental)
+		o, err := incr.Observe(n.graph, n.incremental)
 		if err != nil {
 			return err
 		}
@@ -178,15 +171,17 @@ func (n *cacheNode[K, V]) unobserve(ctx context.Context) {
 		return
 	}
 
-	n.graphMu.Lock()
-	defer n.graphMu.Unlock()
-
 	n.observedIncr.Unobserve(ctx)
+	n.observedIncr = nil
 }
 
 func (n *cacheNode[K, V]) setInitialValue(value V) error {
 	n.value = &value
 	n.useValueFn = false
+
+	if n.graph == nil || n.graph.IsStabilizing() {
+		return nil
+	}
 
 	n.markAsStale()
 	return nil
@@ -206,10 +201,6 @@ func (n *cacheNode[K, V]) addDependency(node *cacheNode[K, V]) error {
 	}
 
 	n.dependencies = append(n.dependencies, node.Key())
-
-	n.graphMu.Lock()
-	defer n.graphMu.Unlock()
-
 	return n.valueFnIncr.AddInput(node.incremental)
 }
 
@@ -230,17 +221,11 @@ func (n *cacheNode[K, V]) removeDependency(node *cacheNode[K, V]) error {
 	n.dependencies = deps
 	id := node.incremental.Node().ID()
 
-	n.graphMu.Lock()
-	defer n.graphMu.Unlock()
-
 	return n.valueFnIncr.RemoveInput(id)
 }
 
 func (n *cacheNode[K, V]) markAsStale() {
-	n.graphMu.Lock()
-	defer n.graphMu.Unlock()
-
-	if !n.graph.Has(n.valueFnIncr) {
+	if n.graph == nil || !n.graph.Has(n.valueFnIncr) {
 		return
 	}
 
@@ -253,4 +238,11 @@ func (n *cacheNode[K, V]) isValid() bool {
 
 func (n *cacheNode[K, V]) invalidate() {
 	n.value = nil
+}
+
+func (n *cacheNode[K, V]) purge(ctx context.Context) {
+	n.unobserve(ctx)
+	n.incremental = nil
+	n.observedIncr = nil
+	n.graph = nil
 }

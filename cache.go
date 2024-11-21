@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/alphadose/haxmap"
 	"github.com/wcharczuk/go-incr"
 )
 
@@ -30,7 +31,7 @@ func (e *entry[K, V]) Dependencies() []K {
 }
 
 // NewEntry creates a cache entry with the given key, value, and dependencies.
-func NewEntry[K comparable, V any](key K, value V, deps []K) Entry[K, V] {
+func NewEntry[K hashable, V any](key K, value V, deps []K) Entry[K, V] {
 	return &entry[K, V]{
 		K:    key,
 		V:    value,
@@ -95,22 +96,27 @@ type CacheOptions struct {
 
 type CacheOption func(*CacheOptions)
 
-type cache[K comparable, V any] struct {
+type hashable interface {
+	fmt.Stringer
+	comparable
+}
+
+type cache[K hashable, V any] struct {
 	opts              []CacheOption
 	graph             *incr.Graph
-	nodes             map[K]*cacheNode[K, V]
+	nodes             *haxmap.Map[string, *cacheNode[K, V]]
+	keys              map[K]struct{}
 	valueFn           func(ctx context.Context, key K) (Entry[K, V], error)
 	writeBackFn       func(ctx context.Context, key K, value V) error
 	cutoffFn          func(ctx context.Context, key K, previous, current V) (bool, error)
+	hashFn            func(str string) uintptr
 	enableParallelism bool
 	parallelism       int
 
-	nodesMu         sync.RWMutex
 	stabilizationMu sync.Mutex
-	graphMu         sync.Mutex
 }
 
-func New[K comparable, V any](valueFn func(ctx context.Context, key K) (Entry[K, V], error), opts ...CacheOption) Cache[K, V] {
+func New[K hashable, V any](valueFn func(ctx context.Context, key K) (Entry[K, V], error), opts ...CacheOption) Cache[K, V] {
 	if valueFn == nil {
 		panic("valueFn is not set")
 	}
@@ -121,7 +127,8 @@ func New[K comparable, V any](valueFn func(ctx context.Context, key K) (Entry[K,
 	}
 
 	return &cache[K, V]{
-		nodes:             make(map[K]*cacheNode[K, V], options.PreallocateCacheSize),
+		nodes:             haxmap.New[string, *cacheNode[K, V]](uintptr(options.PreallocateCacheSize)),
+		keys:              make(map[K]struct{}, options.PreallocateCacheSize),
 		graph:             createIncrGraph(options),
 		valueFn:           valueFn,
 		enableParallelism: options.EnableParallelism,
@@ -131,10 +138,7 @@ func New[K comparable, V any](valueFn func(ctx context.Context, key K) (Entry[K,
 }
 
 func (c *cache[K, V]) Get(key K) (Value[K, V], bool) {
-	c.nodesMu.RLock()
-	defer c.nodesMu.RUnlock()
-
-	node, ok := c.nodes[key]
+	node, ok := c.nodes.Get(key.String())
 	if !ok || !node.isValid() {
 		return nil, false
 	}
@@ -144,29 +148,23 @@ func (c *cache[K, V]) Get(key K) (Value[K, V], bool) {
 
 func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
 	nodes := make([]*cacheNode[K, V], len(entries))
-
-	err := withWriteLock(&c.nodesMu, func() error {
-		for i, entry := range entries {
-			key, value, deps := entry.Key(), entry.Value(), entry.Dependencies()
-			n, ok := c.nodes[key]
-			if !ok {
-				n = newCacheNode(c, key, entry.Value())
-				c.nodes[key] = n
-			}
-			nodes[i] = n
-			err := c.unsafeAdjustDependencies(n, deps)
-			if err != nil {
-				return err
-			}
-			err = n.setInitialValue(value)
-			if err != nil {
-				return err
-			}
+	for i, entry := range entries {
+		key, value, deps := entry.Key(), entry.Value(), entry.Dependencies()
+		n, ok := c.nodes.Get(key.String())
+		if !ok {
+			n = newCacheNode(c, key, entry.Value())
+			c.nodes.Set(key.String(), n)
+			c.keys[key] = struct{}{}
 		}
-		return nil
-	})
-	if err != nil {
-		return err
+		nodes[i] = n
+		err := c.adjustDependencies(n, deps)
+		if err != nil {
+			return err
+		}
+		err = n.setInitialValue(value)
+		if err != nil {
+			return err
+		}
 	}
 
 	for _, node := range nodes {
@@ -174,71 +172,62 @@ func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
 		if err != nil {
 			return err
 		}
+	}
 
-		// deadlock guard. it is possible for the recomputeFn to use Put, which leads to calling Put during stabilization.
-		if c.graph.IsStabilizing() {
-			return nil
-		}
+	// deadlock guard. it is possible for the recomputeFn to use Put, which leads to calling Put during stabilization.
+	if c.graph.IsStabilizing() {
+		return nil
+	}
 
-		err = c.stabilize(ctx)
-		if err != nil {
-			return err
-		}
+	err := c.stabilize(ctx)
+	if err != nil {
+		return err
 	}
 
 	return nil
 }
 
 func (c *cache[K, V]) Recompute(ctx context.Context, keys ...K) error {
-	err := withReadLock(&c.nodesMu, func() error {
-		for _, key := range keys {
-			node, ok := c.nodes[key]
-			if !ok {
-				return fmt.Errorf("key not found in cache: %v", key)
-			}
-			node.invalidate()
-			node.markAsStale()
+	for _, key := range keys {
+		node, ok := c.nodes.Get(key.String())
+		if !ok {
+			return fmt.Errorf("key not found in cache: %v", key)
 		}
-		return nil
-	})
-	if err != nil {
-		return err
+		node.invalidate()
+		node.markAsStale()
 	}
 
 	return c.stabilize(ctx)
 }
 
 func (c *cache[K, V]) Keys() []K {
-	c.nodesMu.RLock()
-	defer c.nodesMu.RUnlock()
-
-	keys := make([]K, len(c.nodes))
-	i := 0
-	for key := range c.nodes {
-		keys[i] = key
-		i++
+	keys := make([]K, 0, len(c.keys))
+	for k := range c.keys {
+		keys = append(keys, k)
 	}
 	return keys
 }
 
 func (c *cache[K, V]) Values() []Value[K, V] {
-	c.nodesMu.RLock()
-	defer c.nodesMu.RUnlock()
+	values := make([]Value[K, V], c.nodes.Len())
+	i := 0
+	c.nodes.ForEach(func(_ string, node *cacheNode[K, V]) bool {
+		values[i] = node
+		i++
+		return true
+	})
 
-	return c.unsafeGetValues()
+	return values
 }
 
 func (c *cache[K, V]) Clear(ctx context.Context) {
-	c.nodesMu.Lock()
-	defer c.nodesMu.Unlock()
-
 	opts := c.opts
 	options := DefaultCacheOptions
 	for _, opt := range opts {
 		opt(&options)
 	}
 
-	handlersAfterPurge := make(map[K][]func(context.Context), len(c.nodes))
+	handlersAfterPurge := make(map[K][]func(context.Context), c.nodes.Len())
 	defer func() {
 		for _, fns := range handlersAfterPurge {
 			for _, fn := range fns {
@@ -246,25 +235,25 @@ func (c *cache[K, V]) Clear(ctx context.Context) {
 			}
 		}
 	}()
-	for _, node := range c.nodes {
+
+	c.nodes.ForEach(func(_ string, node *cacheNode[K, V]) bool {
 		key := node.Key()
 		if len(node.onPurgedHandlers) > 0 {
 			handlersAfterPurge[key] = append(handlersAfterPurge[key], node.onPurgedHandlers...)
 		}
-	}
+		return true
+	})
 
-	c.nodes = make(map[K]*cacheNode[K, V], options.PreallocateCacheSize)
+	c.nodes = haxmap.New[string, *cacheNode[K, V]](uintptr(options.PreallocateCacheSize))
 	c.graph = createIncrGraph(options)
+	c.keys = make(map[K]struct{}, options.PreallocateCacheSize)
 }
 
 func (c *cache[K, V]) Purge(ctx context.Context, keys ...K) {
-	c.nodesMu.Lock()
-	defer c.nodesMu.Unlock()
-
 	stack := make([]K, len(keys))
 	copy(stack, keys)
 
-	handlersAfterPurge := make(map[K][]func(context.Context), len(c.nodes))
+	handlersAfterPurge := make(map[K][]func(context.Context), c.nodes.Len())
 	defer func() {
 		for _, fns := range handlersAfterPurge {
 			for _, fn := range fns {
@@ -278,7 +267,7 @@ func (c *cache[K, V]) Purge(ctx context.Context, keys ...K) {
 		key := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 
-		node, ok := c.nodes[key]
+		node, ok := c.nodes.Get(key.String())
 		if !ok {
 			continue
 		}
@@ -288,9 +277,9 @@ func (c *cache[K, V]) Purge(ctx context.Context, keys ...K) {
 		}
 
 		stack = append(stack, node.DirectDependents()...)
-
-		node.unobserve(ctx)
-		delete(c.nodes, key)
+		node.purge(ctx)
+		c.nodes.Del(key.String())
+		delete(c.keys, key)
 		seen[key] = true
 		if len(node.onPurgedHandlers) > 0 {
 			handlersAfterPurge[key] = append(handlersAfterPurge[key], node.onPurgedHandlers...)
@@ -299,36 +288,40 @@ func (c *cache[K, V]) Purge(ctx context.Context, keys ...K) {
 }
 
 func (c *cache[K, V]) Len() int {
-	c.nodesMu.RLock()
-	defer c.nodesMu.RUnlock()
-
-	return len(c.nodes)
+	return int(c.nodes.Len())
 }
 
 func (c *cache[K, V]) Copy(ctx context.Context) (Cache[K, V], error) {
-	c.nodesMu.RLock()
-	defer c.nodesMu.RUnlock()
-
 	options := DefaultCacheOptions
 	for _, opt := range c.opts {
 		opt(&options)
 	}
 
+	nodesMap := haxmap.New[string, *cacheNode[K, V]](uintptr(options.PreallocateCacheSize))
+	if c.hashFn != nil {
+		nodesMap.SetHasher(c.hashFn)
+	}
+
 	copy := &cache[K, V]{
-		nodes:             make(map[K]*cacheNode[K, V], options.PreallocateCacheSize),
+		nodes:             nodesMap,
 		graph:             createIncrGraph(options),
 		valueFn:           c.valueFn,
+		hashFn:            c.hashFn,
+		cutoffFn:          c.cutoffFn,
+		writeBackFn:       c.writeBackFn,
 		enableParallelism: c.enableParallelism,
 		parallelism:       c.parallelism,
 		opts:              c.opts,
+		keys:              make(map[K]struct{}, options.PreallocateCacheSize),
 	}
 
-	nodes := make([]Value[K, V], len(c.nodes))
+	nodes := make([]Value[K, V], c.nodes.Len())
 	i := 0
-	for _, node := range c.nodes {
+	c.nodes.ForEach(func(_ string, node *cacheNode[K, V]) bool {
 		nodes[i] = node
 		i++
-	}
+		return true
+	})
 
 	sortByHeight(nodes)
 	for _, node := range nodes {
@@ -342,35 +335,31 @@ func (c *cache[K, V]) Copy(ctx context.Context) (Cache[K, V], error) {
 }
 
 func (c *cache[K, V]) WithWriteBackFn(fn func(ctx context.Context, key K, value V) error) Cache[K, V] {
-	c.nodesMu.Lock()
-	defer c.nodesMu.Unlock()
-
 	c.writeBackFn = fn
 	return c
 }
 
 // WithParallelism sets whether the cache should use parallelism when recomputing values.
 func (c *cache[K, V]) WithParallelism(enabled bool) Cache[K, V] {
-	c.nodesMu.Lock()
-	defer c.nodesMu.Unlock()
-
 	c.enableParallelism = enabled
 	return c
 }
 
 func (c *cache[K, V]) WithCutoffFn(fn func(ctx context.Context, key K, previous, current V) (bool, error)) Cache[K, V] {
-	c.nodesMu.Lock()
-	defer c.nodesMu.Unlock()
-
 	c.cutoffFn = fn
 	return c
 }
 
-func (c *cache[K, V]) MarshalJSON() ([]byte, error) {
-	c.nodesMu.RLock()
-	defer c.nodesMu.RUnlock()
+func (c *cache[K, V]) WithHashFn(fn func(str string) uintptr) Cache[K, V] {
+	if fn != nil {
+		c.hashFn = fn
+		c.nodes.SetHasher(fn)
+	}
+	return c
+}
 
-	values := c.unsafeGetValues()
+func (c *cache[K, V]) MarshalJSON() ([]byte, error) {
+	values := c.Values()
 	sortByHeight(values)
 
 	items := make([]string, 0, len(values))
@@ -403,31 +392,13 @@ func (c *cache[K, V]) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-func (c *cache[K, V]) unsafeGetValues() []Value[K, V] {
-	values := make([]Value[K, V], len(c.nodes))
-	i := 0
-	for _, node := range c.nodes {
-		values[i] = node
-		i++
-	}
-
-	return values
-}
-
-func (c *cache[K, V]) maybeAdjustDependencies(node *cacheNode[K, V], newDeps []K) error {
-	c.nodesMu.RLock()
-	defer c.nodesMu.RUnlock()
-
-	return c.unsafeAdjustDependencies(node, newDeps)
-}
-
-func (c *cache[K, V]) unsafeAdjustDependencies(node *cacheNode[K, V], newDeps []K) error {
+func (c *cache[K, V]) adjustDependencies(node *cacheNode[K, V], newDeps []K) error {
 	oldDeps := node.dependencies
 	added := difference(newDeps, oldDeps)
 	removed := difference(oldDeps, newDeps)
 
 	for _, k := range removed {
-		toBeRemoved, ok := c.nodes[k]
+		toBeRemoved, ok := c.nodes.Get(k.String())
 		if !ok {
 			return fmt.Errorf("dependency not found in cache: %v", k)
 		}
@@ -438,7 +409,7 @@ func (c *cache[K, V]) unsafeAdjustDependencies(node *cacheNode[K, V], newDeps []
 	}
 
 	for _, k := range added {
-		toBeAdded, ok := c.nodes[k]
+		toBeAdded, ok := c.nodes.Get(k.String())
 		if !ok {
 			return fmt.Errorf("dependency not found in cache: %v", k)
 		}

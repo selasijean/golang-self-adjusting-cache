@@ -2,7 +2,6 @@ package cache
 
 import (
 	"sort"
-	"sync"
 	"sync/atomic"
 
 	"github.com/wcharczuk/go-incr"
@@ -33,21 +32,7 @@ func createIncrGraph(options CacheOptions) *incr.Graph {
 	)
 }
 
-func withWriteLock(lock *sync.RWMutex, fn func() error) error {
-	lock.Lock()
-	defer lock.Unlock()
-
-	return fn()
-}
-
-func withReadLock(lock *sync.RWMutex, fn func() error) error {
-	lock.RLock()
-	defer lock.RUnlock()
-
-	return fn()
-}
-
-func findDirectDependents[K comparable, V any](node incr.INode) []K {
+func findDirectDependents[K hashable, V any](node incr.INode) []K {
 	out := []K{}
 
 	stack := []incr.INode{node}
@@ -76,7 +61,7 @@ func findDirectDependents[K comparable, V any](node incr.INode) []K {
 	return out
 }
 
-func difference[K comparable](a, b []K) []K {
+func difference[K hashable](a, b []K) []K {
 	differenceMap := make(map[K]bool)
 	for _, item := range b {
 		differenceMap[item] = true
@@ -92,7 +77,7 @@ func difference[K comparable](a, b []K) []K {
 	return diff
 }
 
-func remove[K comparable](keys []K, key K) (output []K, removed bool) {
+func remove[K hashable](keys []K, key K) (output []K, removed bool) {
 	output = make([]K, 0, len(keys))
 	for _, k := range keys {
 		if k != key {
@@ -104,7 +89,7 @@ func remove[K comparable](keys []K, key K) (output []K, removed bool) {
 	return
 }
 
-func sortByHeight[K comparable, V any](nodes []Value[K, V]) {
+func sortByHeight[K hashable, V any](nodes []Value[K, V]) {
 	sort.SliceStable(nodes, func(i, j int) bool {
 		return nodes[i].TopSortOrder() < nodes[j].TopSortOrder()
 	})
