@@ -61,15 +61,26 @@ func findDirectDependents[K hashable, V any](node incr.INode) []K {
 	return out
 }
 
+// difference returns the elements in a that are not in b.
 func difference[K hashable](a, b []K) []K {
-	differenceMap := make(map[K]bool)
-	for _, item := range b {
-		differenceMap[item] = true
+	if len(a) == 0 {
+		return []K{}
 	}
 
-	var diff []K
+	if len(b) == 0 {
+		return a
+	}
+
+	var diff []K = make([]K, 0, len(a))
 	for _, item := range a {
-		if !differenceMap[item] {
+		found := false
+		for _, bItem := range b {
+			if item == bItem {
+				found = true
+				break
+			}
+		}
+		if !found {
 			diff = append(diff, item)
 		}
 	}
