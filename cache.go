@@ -172,16 +172,16 @@ func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) error {
 		if err != nil {
 			return err
 		}
+	}
 
-		// deadlock guard. it is possible for the recomputeFn to use Put, which leads to calling Put during stabilization.
-		if c.graph.IsStabilizing() {
-			return nil
-		}
+	// deadlock guard. it is possible for the recomputeFn to use Put, which leads to calling Put during stabilization.
+	if c.graph.IsStabilizing() {
+		return nil
+	}
 
-		err = c.stabilize(ctx)
-		if err != nil {
-			return err
-		}
+	err := c.stabilize(ctx)
+	if err != nil {
+		return err
 	}
 
 	return nil
