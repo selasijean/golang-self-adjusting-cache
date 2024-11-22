@@ -47,14 +47,14 @@ func findDirectDependents[K hashable, V any](node incr.INode) []K {
 		expertNode := incr.ExpertNode(n)
 		children := expertNode.Children()
 
-		for _, child := range children {
-			nodeMetadata := child.Node().Metadata()
+		for i := 0; i < len(children); i++ {
+			nodeMetadata := children[i].Node().Metadata()
 			if node, ok := nodeMetadata.(*cacheNode[K, V]); ok && node != nil {
 				out = append(out, node.Key())
 				continue
 			}
 
-			stack = append(stack, child)
+			stack = append(stack, children[i])
 		}
 		seen[n.Node().ID().String()] = true
 	}
@@ -71,17 +71,15 @@ func difference[K hashable](a, b []K) []K {
 		return a
 	}
 
-	var diff []K = make([]K, 0)
-	for _, item := range a {
-		found := false
-		for _, bItem := range b {
-			if item == bItem {
-				found = true
-				break
-			}
-		}
-		if !found {
-			diff = append(diff, item)
+	bSet := make(map[K]struct{}, len(b))
+	for i := 0; i < len(b); i++ {
+		bSet[b[i]] = struct{}{}
+	}
+
+	var diff []K
+	for i := 0; i < len(a); i++ {
+		if _, found := bSet[a[i]]; !found {
+			diff = append(diff, a[i])
 		}
 	}
 
@@ -90,9 +88,9 @@ func difference[K hashable](a, b []K) []K {
 
 func remove[K hashable](keys []K, key K) (output []K, removed bool) {
 	output = make([]K, 0, len(keys))
-	for _, k := range keys {
-		if k != key {
-			output = append(output, k)
+	for i := 0; i < len(keys); i++ {
+		if keys[i] != key {
+			output = append(output, keys[i])
 		} else {
 			removed = true
 		}

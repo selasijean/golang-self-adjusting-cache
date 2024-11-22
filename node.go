@@ -10,7 +10,7 @@ import (
 
 type cacheNode[K hashable, V any] struct {
 	dependencies []K
-	key          K
+	key          *K
 
 	value      *V
 	useValueFn bool
@@ -23,35 +23,34 @@ type cacheNode[K hashable, V any] struct {
 
 	onUpdateHandlers []func(context.Context)
 	onPurgedHandlers []func(context.Context)
-
-	metadata any
 }
 
 func newCacheNode[K hashable, V any](c *cache[K, V], entry Entry[K, V]) (*cacheNode[K, V], error) {
 	graph := c.graph
-	key, value, deps := entry.Key(), entry.Value(), entry.Dependencies()
+	key, value := entry.Key(), entry.Value()
 	n := &cacheNode[K, V]{
 		graph:        graph,
-		key:          key,
+		key:          &key,
 		value:        &value,
 		useValueFn:   false,
-		dependencies: deps,
+		dependencies: entry.Dependencies(),
 	}
 
-	incrs := make([]incr.Incr[V], 0, len(n.dependencies))
-	for _, dep := range n.dependencies {
-		node, ok := c.nodes.Get(dep.String())
+	incrs := make([]incr.Incr[V], len(n.dependencies))
+	for i := 0; i < len(n.dependencies); i++ {
+		keyStr := n.dependencies[i].String()
+		node, ok := c.nodes.Get(keyStr)
 		if !ok {
-			return nil, fmt.Errorf("dependency not found: %v", dep)
+			return nil, fmt.Errorf("dependency not found: %v", keyStr)
 		}
-		incrs = append(incrs, node.incremental)
+		incrs[i] = node.incremental
 	}
 
 	n.valueFnIncr = incr.MapNContext(graph, func(ctx context.Context, values ...V) (result V, err error) {
 		var zero V
 		defer func() {
 			if c.writeBackFn != nil {
-				err = c.writeBackFn(ctx, key, result)
+				err = c.writeBackFn(ctx, *n.key, result)
 				if err != nil {
 					result = zero
 				}
@@ -65,7 +64,7 @@ func newCacheNode[K hashable, V any](c *cache[K, V], entry Entry[K, V]) (*cacheN
 
 		// if cache.Get(key) is called within the valueFn, n.hasValue enables us to invalidate cached value for the given key
 		n.value = nil
-		val, err := c.valueFn(ctx, key)
+		val, err := c.valueFn(ctx, *n.key)
 		if err != nil {
 			return zero, err
 		}
@@ -99,7 +98,7 @@ func newCacheNode[K hashable, V any](c *cache[K, V], entry Entry[K, V]) (*cacheN
 		if c.cutoffFn == nil {
 			return false, nil
 		}
-		return c.cutoffFn(ctx, key, previous, current)
+		return c.cutoffFn(ctx, *n.key, previous, current)
 	}
 
 	n.incremental = incr.CutoffContext(graph, n.valueFnIncr, cutoffFn)
@@ -113,7 +112,7 @@ func newCacheNode[K hashable, V any](c *cache[K, V], entry Entry[K, V]) (*cacheN
 }
 
 func (n *cacheNode[K, V]) Key() K {
-	return n.key
+	return *n.key
 }
 
 func (n *cacheNode[K, V]) Value() V {
@@ -135,10 +134,6 @@ func (n *cacheNode[K, V]) Dependencies() []K {
 
 func (n *cacheNode[K, V]) DirectDependents() []K {
 	return findDirectDependents[K, V](n.incremental)
-}
-
-func (n *cacheNode[K, V]) Metadata() any {
-	return n.metadata
 }
 
 func (n *cacheNode[K, V]) TopSortOrder() int {
@@ -184,8 +179,8 @@ func (n *cacheNode[K, V]) unobserve(ctx context.Context) {
 	n.observedIncr = nil
 }
 
-func (n *cacheNode[K, V]) setInitialValue(value V) error {
-	n.value = &value
+func (n *cacheNode[K, V]) setInitialValue(value *V) error {
+	n.value = value
 	n.useValueFn = false
 
 	if n.graph == nil || n.graph.IsStabilizing() {
@@ -234,7 +229,7 @@ func (n *cacheNode[K, V]) removeDependency(node *cacheNode[K, V]) error {
 }
 
 func (n *cacheNode[K, V]) markAsStale() {
-	if n.graph == nil || !n.graph.Has(n.valueFnIncr) {
+	if n.graph == nil || n.observedIncr == nil {
 		return
 	}
 
