@@ -143,30 +143,31 @@ func (c *cache[K, V]) Get(key K) (Value[K, V], bool) {
 
 func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) (err error) {
 	nodes := make([]*cacheNode[K, V], 0, len(entries))
-	for _, entry := range entries {
-		key, value, deps := entry.Key(), entry.Value(), entry.Dependencies()
-		n, ok := c.nodes.Get(key.String())
+	for i := 0; i < len(entries); i++ {
+		keyStr := entries[i].Key().String()
+		n, ok := c.nodes.Get(keyStr)
 		if !ok {
-			n, err = newCacheNode(c, entry)
+			n, err = newCacheNode(c, entries[i])
 			if err != nil {
 				return err
 			}
-			c.nodes.Set(key.String(), n)
+			c.nodes.Set(keyStr, n)
 			nodes = append(nodes, n)
 		} else {
-			err = c.adjustDependencies(n, deps)
+			err = c.adjustDependencies(n, entries[i].Dependencies())
 			if err != nil {
 				return err
 			}
 		}
-		err = n.setInitialValue(value)
+		value := entries[i].Value()
+		err = n.setInitialValue(&value)
 		if err != nil {
 			return err
 		}
 	}
 
-	for _, node := range nodes {
-		err = node.observe()
+	for i := 0; i < len(nodes); i++ {
+		err = nodes[i].observe()
 		if err != nil {
 			return err
 		}
@@ -186,10 +187,11 @@ func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) (err erro
 }
 
 func (c *cache[K, V]) Recompute(ctx context.Context, keys ...K) error {
-	for _, key := range keys {
-		node, ok := c.nodes.Get(key.String())
+	for i := 0; i < len(keys); i++ {
+		keyStr := keys[i].String()
+		node, ok := c.nodes.Get(keyStr)
 		if !ok {
-			return fmt.Errorf("key not found in cache: %v", key)
+			return fmt.Errorf("key not found in cache: %v", keyStr)
 		}
 		node.invalidate()
 		node.markAsStale()
@@ -203,9 +205,9 @@ func (c *cache[K, V]) Recompute(ctx context.Context, keys ...K) error {
 
 func (c *cache[K, V]) Keys() []K {
 	values := c.Values()
-	keys := make([]K, 0, len(values))
-	for _, v := range values {
-		keys = append(keys, v.Key())
+	keys := make([]K, len(values))
+	for i := 0; i < len(values); i++ {
+		keys[i] = values[i].Key()
 	}
 	return keys
 }
@@ -328,8 +330,8 @@ func (c *cache[K, V]) Copy(ctx context.Context) (Cache[K, V], error) {
 	})
 
 	sortByHeight(nodes)
-	for _, node := range nodes {
-		err := copy.Put(ctx, node)
+	for i := 0; i < len(nodes); i++ {
+		err := copy.Put(ctx, nodes[i])
 		if err != nil {
 			return nil, err
 		}
@@ -366,15 +368,15 @@ func (c *cache[K, V]) MarshalJSON() ([]byte, error) {
 	values := c.Values()
 	sortByHeight(values)
 
-	items := make([]string, 0, len(values))
-	for _, v := range values {
-		entry := NewEntry(v.Key(), v.Value(), v.Dependencies())
+	items := make([]string, len(values))
+	for i := 0; i < len(values); i++ {
+		entry := NewEntry(values[i].Key(), values[i].Value(), values[i].Dependencies())
 		b, err := json.Marshal(entry)
 		if err != nil {
 			return nil, err
 		}
 
-		items = append(items, string(b))
+		items[i] = string(b)
 	}
 
 	return []byte(fmt.Sprintf("[%s]", strings.Join(items, ","))), nil
@@ -387,8 +389,8 @@ func (c *cache[K, V]) UnmarshalJSON(b []byte) error {
 		return err
 	}
 
-	for _, e := range entries {
-		err := c.Put(context.Background(), e)
+	for i := 0; i < len(entries); i++ {
+		err := c.Put(context.Background(), entries[i])
 		if err != nil {
 			return err
 		}
@@ -398,13 +400,17 @@ func (c *cache[K, V]) UnmarshalJSON(b []byte) error {
 
 func (c *cache[K, V]) adjustDependencies(node *cacheNode[K, V], newDeps []K) error {
 	oldDeps := node.dependencies
-	added := difference(newDeps, oldDeps)
 	removed := difference(oldDeps, newDeps)
+	if len(oldDeps) == len(newDeps) && len(removed) == 0 {
+		return nil
+	}
 
-	for _, k := range removed {
-		toBeRemoved, ok := c.nodes.Get(k.String())
+	added := difference(newDeps, oldDeps)
+	for i := 0; i < len(removed); i++ {
+		keyStr := removed[i].String()
+		toBeRemoved, ok := c.nodes.Get(keyStr)
 		if !ok {
-			return fmt.Errorf("dependency not found in cache: %v", k)
+			return fmt.Errorf("dependency not found in cache: %v", keyStr)
 		}
 		err := node.removeDependency(toBeRemoved)
 		if err != nil {
@@ -412,10 +418,11 @@ func (c *cache[K, V]) adjustDependencies(node *cacheNode[K, V], newDeps []K) err
 		}
 	}
 
-	for _, k := range added {
-		toBeAdded, ok := c.nodes.Get(k.String())
+	for i := 0; i < len(added); i++ {
+		keyStr := added[i].String()
+		toBeAdded, ok := c.nodes.Get(keyStr)
 		if !ok {
-			return fmt.Errorf("dependency not found in cache: %v", k)
+			return fmt.Errorf("dependency not found in cache: %v", keyStr)
 		}
 		err := node.addDependency(toBeAdded)
 		if err != nil {
