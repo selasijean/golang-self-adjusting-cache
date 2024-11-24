@@ -11,7 +11,7 @@ import (
 	"github.com/wcharczuk/go-incr"
 )
 
-type entry[K comparable, V any] struct {
+type entry[K Hashable, V any] struct {
 	K    K   `json:"key"`
 	V    V   `json:"value"`
 	Deps []K `json:"dependencies"`
@@ -30,7 +30,7 @@ func (e *entry[K, V]) Dependencies() []K {
 }
 
 // NewEntry creates a cache entry with the given key, value, and dependencies.
-func NewEntry[K hashable, V any](key K, value V, deps []K) Entry[K, V] {
+func NewEntry[K Hashable, V any](key K, value V, deps []K) Entry[K, V] {
 	return &entry[K, V]{
 		K:    key,
 		V:    value,
@@ -43,8 +43,8 @@ const (
 	DefaultMaxHeight = 20000
 )
 
-var DefaultCacheOptions = CacheOptions{
-	MaxHeightOfDependencyGraph: DefaultMaxHeight,
+var defaultCacheOptions = CacheOptions{
+	MaxHeightOfDependencyGraph: DefaultMaxHeight * 2, // 2x to account for the fact that each cache entry consists of a mapNIncr that is a parent of a cutoffIncr
 }
 
 // OptCachePreallocateNodesSize preallocates the size of the cache
@@ -61,7 +61,7 @@ func OptPreallocateSize(size int) func(*CacheOptions) {
 // If not provided, the default height is 20000.
 func OptMaxHeightOfDependencyGraph(size int) func(*CacheOptions) {
 	return func(c *CacheOptions) {
-		c.MaxHeightOfDependencyGraph = size
+		c.MaxHeightOfDependencyGraph = size * 2 // 2x to account for the fact that each cache entry consists of a mapNIncr that is a parent of a cutoffIncr
 	}
 }
 
@@ -95,12 +95,13 @@ type CacheOptions struct {
 
 type CacheOption func(*CacheOptions)
 
-type hashable interface {
-	fmt.Stringer
-	comparable
+// Types that can be used as keys for this cache must be comparable and have a unique identifier.
+type Hashable interface {
+	// Identifier returns a unique identifier for the key.
+	Identifier() string
 }
 
-type cache[K hashable, V any] struct {
+type cache[K Hashable, V any] struct {
 	opts              []CacheOption
 	graph             *incr.Graph
 	nodes             *haxmap.Map[string, *cacheNode[K, V]]
@@ -112,12 +113,12 @@ type cache[K hashable, V any] struct {
 	parallelism       int
 }
 
-func New[K hashable, V any](valueFn func(ctx context.Context, key K) (Entry[K, V], error), opts ...CacheOption) Cache[K, V] {
+func New[K Hashable, V any](valueFn func(ctx context.Context, key K) (Entry[K, V], error), opts ...CacheOption) Cache[K, V] {
 	if valueFn == nil {
 		panic("valueFn is not set")
 	}
 
-	options := DefaultCacheOptions
+	options := defaultCacheOptions
 	for _, opt := range opts {
 		opt(&options)
 	}
@@ -133,7 +134,7 @@ func New[K hashable, V any](valueFn func(ctx context.Context, key K) (Entry[K, V
 }
 
 func (c *cache[K, V]) Get(key K) (Value[K, V], bool) {
-	node, ok := c.nodes.Get(key.String())
+	node, ok := c.nodes.Get(key.Identifier())
 	if !ok || !node.isValid() {
 		return nil, false
 	}
@@ -142,38 +143,28 @@ func (c *cache[K, V]) Get(key K) (Value[K, V], bool) {
 }
 
 func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) (err error) {
-	nodes := make([]*cacheNode[K, V], 0, len(entries))
 	for i := 0; i < len(entries); i++ {
-		keyStr := entries[i].Key().String()
-		n, ok := c.nodes.Get(keyStr)
+		n, ok := c.nodes.Get(entries[i].Key().Identifier())
 		if !ok {
 			n, err = newCacheNode(c, entries[i])
 			if err != nil {
 				return err
 			}
-			c.nodes.Set(keyStr, n)
-			nodes = append(nodes, n)
+			c.nodes.Set(entries[i].Key().Identifier(), n)
+			err = n.observe()
+			if err != nil {
+				return nil
+			}
 		} else {
+			n.setInitialValue(entries[i].Value())
 			err = c.adjustDependencies(n, entries[i].Dependencies())
 			if err != nil {
 				return err
 			}
 		}
-		value := entries[i].Value()
-		err = n.setInitialValue(&value)
-		if err != nil {
-			return err
-		}
 	}
 
-	for i := 0; i < len(nodes); i++ {
-		err = nodes[i].observe()
-		if err != nil {
-			return err
-		}
-	}
-
-	// deadlock guard. it is possible for the recomputeFn to use Put, which leads to calling Put during stabilization.
+	// it is possible for the recomputeFn to use Put, which leads to calling Put during stabilization. In which case, we don't need to call stabilize again.
 	if c.graph.IsStabilizing() {
 		return nil
 	}
@@ -188,10 +179,9 @@ func (c *cache[K, V]) Put(ctx context.Context, entries ...Entry[K, V]) (err erro
 
 func (c *cache[K, V]) Recompute(ctx context.Context, keys ...K) error {
 	for i := 0; i < len(keys); i++ {
-		keyStr := keys[i].String()
-		node, ok := c.nodes.Get(keyStr)
+		node, ok := c.nodes.Get(keys[i].Identifier())
 		if !ok {
-			return fmt.Errorf("key not found in cache: %v", keyStr)
+			return fmt.Errorf("key not found in cache: %v", keys[i])
 		}
 		node.invalidate()
 		node.markAsStale()
@@ -226,12 +216,12 @@ func (c *cache[K, V]) Values() []Value[K, V] {
 
 func (c *cache[K, V]) Clear(ctx context.Context) {
 	opts := c.opts
-	options := DefaultCacheOptions
+	options := defaultCacheOptions
 	for _, opt := range opts {
 		opt(&options)
 	}
 
-	handlersAfterPurge := make(map[K][]func(context.Context), c.nodes.Len())
+	handlersAfterPurge := make(map[string][]func(context.Context), c.nodes.Len())
 	defer func() {
 		for _, fns := range handlersAfterPurge {
 			for _, fn := range fns {
@@ -243,7 +233,7 @@ func (c *cache[K, V]) Clear(ctx context.Context) {
 	c.nodes.ForEach(func(_ string, node *cacheNode[K, V]) bool {
 		key := node.Key()
 		if len(node.onPurgedHandlers) > 0 {
-			handlersAfterPurge[key] = append(handlersAfterPurge[key], node.onPurgedHandlers...)
+			handlersAfterPurge[key.Identifier()] = append(handlersAfterPurge[key.Identifier()], node.onPurgedHandlers...)
 		}
 		return true
 	})
@@ -256,7 +246,7 @@ func (c *cache[K, V]) Purge(ctx context.Context, keys ...K) {
 	stack := make([]K, len(keys))
 	copy(stack, keys)
 
-	handlersAfterPurge := make(map[K][]func(context.Context), c.nodes.Len())
+	handlersAfterPurge := make(map[string][]func(context.Context), c.nodes.Len())
 	defer func() {
 		for _, fns := range handlersAfterPurge {
 			for _, fn := range fns {
@@ -265,26 +255,26 @@ func (c *cache[K, V]) Purge(ctx context.Context, keys ...K) {
 		}
 	}()
 
-	seen := make(map[K]bool)
+	seen := make(map[string]bool)
 	for len(stack) > 0 {
 		key := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 
-		node, ok := c.nodes.Get(key.String())
+		node, ok := c.nodes.Get(key.Identifier())
 		if !ok {
 			continue
 		}
 
-		if seen[key] {
+		if seen[key.Identifier()] {
 			continue
 		}
 
 		stack = append(stack, node.DirectDependents()...)
 		node.purge(ctx)
-		c.nodes.Del(key.String())
-		seen[key] = true
+		c.nodes.Del(key.Identifier())
+		seen[key.Identifier()] = true
 		if len(node.onPurgedHandlers) > 0 {
-			handlersAfterPurge[key] = append(handlersAfterPurge[key], node.onPurgedHandlers...)
+			handlersAfterPurge[key.Identifier()] = append(handlersAfterPurge[key.Identifier()], node.onPurgedHandlers...)
 		}
 	}
 }
@@ -294,7 +284,7 @@ func (c *cache[K, V]) Len() int {
 }
 
 func (c *cache[K, V]) Copy(ctx context.Context) (Cache[K, V], error) {
-	options := DefaultCacheOptions
+	options := defaultCacheOptions
 	for _, opt := range c.opts {
 		opt(&options)
 	}
@@ -302,11 +292,6 @@ func (c *cache[K, V]) Copy(ctx context.Context) (Cache[K, V], error) {
 	nodesMap := haxmap.New[string, *cacheNode[K, V]](uintptr(options.PreallocateCacheSize))
 	if c.hashFn != nil {
 		nodesMap.SetHasher(c.hashFn)
-	}
-
-	keysMap := haxmap.New[string, K](uintptr(options.PreallocateCacheSize))
-	if c.hashFn != nil {
-		keysMap.SetHasher(c.hashFn)
 	}
 
 	copy := &cache[K, V]{
@@ -405,12 +390,10 @@ func (c *cache[K, V]) adjustDependencies(node *cacheNode[K, V], newDeps []K) err
 		return nil
 	}
 
-	added := difference(newDeps, oldDeps)
 	for i := 0; i < len(removed); i++ {
-		keyStr := removed[i].String()
-		toBeRemoved, ok := c.nodes.Get(keyStr)
+		toBeRemoved, ok := c.nodes.Get(removed[i].Identifier())
 		if !ok {
-			return fmt.Errorf("dependency not found in cache: %v", keyStr)
+			return fmt.Errorf("dependency not found in cache: %v", removed[i])
 		}
 		err := node.removeDependency(toBeRemoved)
 		if err != nil {
@@ -418,17 +401,16 @@ func (c *cache[K, V]) adjustDependencies(node *cacheNode[K, V], newDeps []K) err
 		}
 	}
 
+	added := difference(newDeps, oldDeps)
 	for i := 0; i < len(added); i++ {
-		keyStr := added[i].String()
-		toBeAdded, ok := c.nodes.Get(keyStr)
+		toBeAdded, ok := c.nodes.Get(added[i].Identifier())
 		if !ok {
-			return fmt.Errorf("dependency not found in cache: %v", keyStr)
+			return fmt.Errorf("dependency not found in cache: %v", added[i])
 		}
 		err := node.addDependency(toBeAdded)
 		if err != nil {
 			return err
 		}
 	}
-
 	return nil
 }

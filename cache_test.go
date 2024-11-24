@@ -14,7 +14,7 @@ type cacheKey struct {
 	t int
 }
 
-func (k cacheKey) String() string {
+func (k cacheKey) Identifier() string {
 	return strconv.Itoa(k.t)
 }
 
@@ -499,28 +499,28 @@ func TestCache_Copy(t *testing.T) {
 	}
 }
 
-type testKey struct {
+type testSerializableKey struct {
 	Key int
 }
 
-func (k testKey) String() string {
+func (k testSerializableKey) Identifier() string {
 	return strconv.Itoa(k.Key)
 }
 
-type testValue struct {
+type testSerializableValue struct {
 	Value string
 }
 
 func TestCache_MarshalUnmarshalJSON(t *testing.T) {
-	valueFn := func(ctx context.Context, key testKey) (Entry[testKey, testValue], error) {
-		return NewEntry(key, testValue{Value: fmt.Sprintf("val-%d", key.Key)}, nil), nil
+	valueFn := func(ctx context.Context, key testSerializableKey) (Entry[testSerializableKey, testSerializableValue], error) {
+		return NewEntry(key, testSerializableValue{Value: fmt.Sprintf("val-%d", key.Key)}, nil), nil
 	}
 
 	cache := New(valueFn)
 	ctx := context.Background()
 
 	for i := 0; i < 10; i++ {
-		val, err := valueFn(ctx, testKey{Key: i})
+		val, err := valueFn(ctx, testSerializableKey{Key: i})
 		require.NoError(t, err)
 		err = cache.Put(ctx, val)
 		require.NoError(t, err)

@@ -3,12 +3,11 @@ package cache
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"github.com/wcharczuk/go-incr"
 )
 
-type cacheNode[K hashable, V any] struct {
+type cacheNode[K Hashable, V any] struct {
 	dependencies []K
 	key          *K
 
@@ -25,7 +24,7 @@ type cacheNode[K hashable, V any] struct {
 	onPurgedHandlers []func(context.Context)
 }
 
-func newCacheNode[K hashable, V any](c *cache[K, V], entry Entry[K, V]) (*cacheNode[K, V], error) {
+func newCacheNode[K Hashable, V any](c *cache[K, V], entry Entry[K, V]) (*cacheNode[K, V], error) {
 	graph := c.graph
 	key, value := entry.Key(), entry.Value()
 	n := &cacheNode[K, V]{
@@ -38,10 +37,9 @@ func newCacheNode[K hashable, V any](c *cache[K, V], entry Entry[K, V]) (*cacheN
 
 	incrs := make([]incr.Incr[V], len(n.dependencies))
 	for i := 0; i < len(n.dependencies); i++ {
-		keyStr := n.dependencies[i].String()
-		node, ok := c.nodes.Get(keyStr)
+		node, ok := c.nodes.Get(n.dependencies[i].Identifier())
 		if !ok {
-			return nil, fmt.Errorf("dependency not found: %v", keyStr)
+			return nil, fmt.Errorf("dependency not found: %v", n.dependencies[i])
 		}
 		incrs[i] = node.incremental
 	}
@@ -62,7 +60,7 @@ func newCacheNode[K hashable, V any](c *cache[K, V], entry Entry[K, V]) (*cacheN
 			return
 		}
 
-		// if cache.Get(key) is called within the valueFn, n.hasValue enables us to invalidate cached value for the given key
+		// if cache.Get(key) is called within the valueFn, n.value enables us to invalidate cached value for the given key
 		n.value = nil
 		val, err := c.valueFn(ctx, *n.key)
 		if err != nil {
@@ -179,16 +177,15 @@ func (n *cacheNode[K, V]) unobserve(ctx context.Context) {
 	n.observedIncr = nil
 }
 
-func (n *cacheNode[K, V]) setInitialValue(value *V) error {
-	n.value = value
+func (n *cacheNode[K, V]) setInitialValue(value V) {
+	n.value = &value
 	n.useValueFn = false
 
 	if n.graph == nil || n.graph.IsStabilizing() {
-		return nil
+		return
 	}
 
 	n.markAsStale()
-	return nil
 }
 
 func (n *cacheNode[K, V]) addDependency(node *cacheNode[K, V]) error {
@@ -200,7 +197,7 @@ func (n *cacheNode[K, V]) addDependency(node *cacheNode[K, V]) error {
 		return fmt.Errorf("node has no incremental: %v", node.Key())
 	}
 
-	if slices.Contains(n.dependencies, node.Key()) {
+	if contains(n.dependencies, node.Key()) {
 		return nil
 	}
 

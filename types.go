@@ -4,9 +4,11 @@ import (
 	"context"
 )
 
-type Value[K hashable, V any] interface {
-	// TopSortOrder returns the topological sort order of the value.
+type Value[K Hashable, V any] interface {
+	// TopSortOrder returns the topological sort order of the value within the cache.
+	// For v1,v2 if v1.TopSortOrder() == v2.TopSortOrder() then v1 and v2 are independent of each other. If v2 depends on v1 (directly or indirectly), then v2.TopSortOrder() > v1.TopSortOrder().
 	TopSortOrder() int
+
 	Entry[K, V]
 	// OnUpdate registers a callback that is called when the value is updated.
 	OnUpdate(fn func(context.Context))
@@ -17,7 +19,7 @@ type Value[K hashable, V any] interface {
 }
 
 // Entry is a generic interface for an entry in the cache.
-type Entry[K hashable, V any] interface {
+type Entry[K Hashable, V any] interface {
 	// Dependencies returns the dependencies of the cache entry.
 	Dependencies() []K
 	// Key returns the key of the cache entry.
@@ -26,7 +28,7 @@ type Entry[K hashable, V any] interface {
 	Value() V
 }
 
-type Cache[K hashable, V any] interface {
+type Cache[K Hashable, V any] interface {
 	// Clear removes all entries from the cache.
 	Clear(ctx context.Context)
 	// Copy creates a deep copy of the cache.

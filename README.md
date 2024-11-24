@@ -17,20 +17,32 @@ A mini-worked example:
 import "github.com/selasijean/golang-self-adjusting-cache"
 
 ...
-func (e *evaluator) identityFn(ctx context.Context, t int) (Entry[int, int], error) {
-	cached, ok := e.cache.Get(t)
+type cacheKey struct {
+	t int
+}
+
+func (k cacheKey) Identifier() string {
+	return strconv.Itoa(k.t)
+}
+
+func fnKey(t int) cacheKey {
+	return cacheKey{t: t}
+}
+
+func (e *evaluator) identityFn(ctx context.Context, t int) (Entry[cacheKey, int], error) {
+	cached, ok := e.cache.Get(fnKey(t))
 	if ok {
 		return cached, nil
 	}
 
-	out := NewEntry(t, 0, nil)
+	out := NewEntry(fnKey(t), 0, nil)
 	if t > 0 {
 		tMinus := t-1
 		r, err := e.identityFn(ctx, tMinus)
 		if err != nil {
 			return nil, err
 		}
-		out = NewEntry(t, r.Value()+1, []int{tMinus})
+		out = NewEntry(fnKey(t), r.Value()+1, []cacheKey{fnKey(tMinus)})
 	}
 
 	err := e.cache.Put(ctx, out)
@@ -40,8 +52,8 @@ func (e *evaluator) identityFn(ctx context.Context, t int) (Entry[int, int], err
 	return out, nil
 }
 
-valueFn := func(ctx context.Context, t int) (Entry[int, int], error) {
-	return evaluator.identityFn(ctx, t) // where identity(t) = identity(t-1) + 1 where identity(0) = 0.
+valueFn := func(ctx context.Context, k cacheKey) (Entry[cacheKey, int], error) {
+	return evaluator.identityFn(ctx, k.t) // where identity(t) = identity(t-1) + 1 where identity(0) = 0.
 }
 
 cache := cache.New(valueFn)
@@ -49,7 +61,7 @@ cache := cache.New(valueFn)
 _, err := evaluator.identityFn(ctx, 4)
 require.NoError(t, err)
 
-cached, ok := cache.Get(4)
+cached, ok := cache.Get(fnKey(4))
 require.True(t, ok)
 require.Equal(t, 4, cached.Value())
 
@@ -59,7 +71,7 @@ require.NoError(t, err)
 
 // all cached values that depend on identityFn(0) should be recomputed and their values offset by 1.
 for i := 1; i <= 4; i++ {
-	cached, ok = cache.Get(i)
+	cached, ok = cache.Get(fnKey(i))
 	require.True(t, ok)
 	require.Equal(t, i+1, cached.Value())
 }
