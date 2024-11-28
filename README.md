@@ -83,3 +83,7 @@ for i := 1; i <= 4; i++ {
 `Put` adds to the cache serially, building the internal graph that tracks the relationships between cached values. When parallelism is enabled, it only works with `Recompute` because the cache at that point has sufficient information from its internal graph to infer which entries are independent from one another and hence can be recomputed in parallel.
 
 In certain cases, Parallel mode may be slower to recompute since locks have to be acquired and shared state managed carefully. You should only reach to use Parallel mode if the computation involved in re-evaluating a cache value is large relative to that overhead of managing locks and shared state.
+
+# API compatibility guarantees
+
+As of v1.xxx you should assume that the functions and types exported by this library will maintain forward compatibility until some future v2 necessitates changing things meaningfully, at which point we'll integrate [semantic import versioning](https://go.googlesource.com/proposal/+/master/design/24301-versioned-go.md).

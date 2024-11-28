@@ -38,7 +38,7 @@ type Cache[K Hashable, V any] interface {
 	// Keys returns all the keys in the cache.
 	Keys() []K
 	// Len returns the number of entries in the cache.
-	Len() int
+	Len() int64
 	// Purge removes the given keys and all dependent keys from the cache.
 	Purge(ctx context.Context, keys ...K)
 	// Put adds the given entries to the cache.

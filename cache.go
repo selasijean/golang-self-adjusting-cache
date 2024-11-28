@@ -246,7 +246,7 @@ func (c *cache[K, V]) Purge(ctx context.Context, keys ...K) {
 	stack := make([]K, len(keys))
 	copy(stack, keys)
 
-	handlersAfterPurge := make(map[string][]func(context.Context), c.nodes.Len())
+	handlersAfterPurge := make(map[string][]func(context.Context), len(keys))
 	defer func() {
 		for _, fns := range handlersAfterPurge {
 			for _, fn := range fns {
@@ -255,7 +255,7 @@ func (c *cache[K, V]) Purge(ctx context.Context, keys ...K) {
 		}
 	}()
 
-	seen := make(map[string]bool)
+	seen := make(map[string]bool, len(keys))
 	for len(stack) > 0 {
 		key := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
@@ -279,8 +279,8 @@ func (c *cache[K, V]) Purge(ctx context.Context, keys ...K) {
 	}
 }
 
-func (c *cache[K, V]) Len() int {
-	return int(c.nodes.Len())
+func (c *cache[K, V]) Len() int64 {
+	return int64(c.nodes.Len())
 }
 
 func (c *cache[K, V]) Copy(ctx context.Context) (Cache[K, V], error) {

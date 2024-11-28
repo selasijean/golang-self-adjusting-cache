@@ -330,7 +330,7 @@ func TestCache_Purge(t *testing.T) {
 	_, err := evaluator.identityFn(ctx, fnKey(maxT))
 	require.NoError(t, err)
 
-	require.Equal(t, 11, cache.Len()) // identifyFn(10) introduces 11 nodes into the cache (0 through 10)
+	require.Equal(t, int64(11), cache.Len()) // identifyFn(10) introduces 11 nodes into the cache (0 through 10)
 
 	purgedCount := 0
 	evalAtZero, ok := cache.Get(fnKey(0))
@@ -340,13 +340,13 @@ func TestCache_Purge(t *testing.T) {
 	})
 
 	cache.Purge(ctx, fnKey(0))
-	require.Equal(t, 0, cache.Len()) // purge(0) clears all the direct and indirect dependents of identifyFn(0).
+	require.Equal(t, int64(0), cache.Len()) // purge(0) clears all the direct and indirect dependents of identifyFn(0).
 	require.Equal(t, 1, purgedCount)
 
 	_, err = evaluator.identityFn(ctx, fnKey(maxT)) // reintroduce all the nodes into the cache and verify that the cache can be used again
 	require.NoError(t, err)
 
-	require.Equal(t, 11, cache.Len())
+	require.Equal(t, int64(11), cache.Len())
 	for i := 0; i < maxT; i++ {
 		key := fnKey(i)
 		v, ok := cache.Get(key)
@@ -370,7 +370,7 @@ func TestCache_Clear(t *testing.T) {
 	_, err := evaluator.identityFn(ctx, fnKey(maxT))
 	require.NoError(t, err)
 
-	require.Equal(t, 11, cache.Len())
+	require.Equal(t, int64(11), cache.Len())
 
 	purgedCount := 0
 	evalAtZero, ok := cache.Get(fnKey(0))
@@ -380,13 +380,13 @@ func TestCache_Clear(t *testing.T) {
 	})
 
 	cache.Clear(ctx)
-	require.Equal(t, 0, cache.Len())
+	require.Equal(t, int64(0), cache.Len())
 	require.Equal(t, 1, purgedCount)
 
 	_, err = evaluator.identityFn(ctx, fnKey(maxT)) // reintroduce all the nodes into the cache and verify that the cache can be used again
 	require.NoError(t, err)
 
-	require.Equal(t, 11, cache.Len())
+	require.Equal(t, int64(11), cache.Len())
 	for i := 0; i < maxT; i++ {
 		key := fnKey(i)
 		v, ok := cache.Get(key)
