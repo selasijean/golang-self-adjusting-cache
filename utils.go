@@ -33,16 +33,18 @@ func createIncrGraph(options CacheOptions) *incr.Graph {
 }
 
 func findDirectDependents[K Hashable, V any](node incr.INode) []K {
-	out := []K{}
+	var out []K
 
 	stack := []incr.INode{node}
-	seen := map[string]bool{}
+	seen := make(map[incr.Identifier]struct{})
 	for len(stack) > 0 {
 		n := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		if _, ok := seen[n.Node().ID().String()]; ok {
+		id := n.Node().ID()
+		if _, ok := seen[id]; ok {
 			continue
 		}
+		seen[id] = struct{}{}
 
 		expertNode := incr.ExpertNode(n)
 		children := expertNode.Children()
@@ -56,55 +58,8 @@ func findDirectDependents[K Hashable, V any](node incr.INode) []K {
 
 			stack = append(stack, children[i])
 		}
-		seen[n.Node().ID().String()] = true
 	}
 	return out
-}
-
-// difference returns the elements in a that are not in b.
-func difference[K Hashable](a, b []K) []K {
-	if len(a) == 0 {
-		return []K{}
-	}
-
-	if len(b) == 0 {
-		return a
-	}
-
-	bSet := make(map[string]struct{}, len(b))
-	for i := 0; i < len(b); i++ {
-		bSet[b[i].Identifier()] = struct{}{}
-	}
-
-	var diff []K
-	for i := 0; i < len(a); i++ {
-		if _, found := bSet[a[i].Identifier()]; !found {
-			diff = append(diff, a[i])
-		}
-	}
-
-	return diff
-}
-
-func remove[K Hashable](keys []K, key K) (output []K, removed bool) {
-	output = make([]K, 0, len(keys))
-	for i := 0; i < len(keys); i++ {
-		if keys[i].Identifier() != key.Identifier() {
-			output = append(output, keys[i])
-		} else {
-			removed = true
-		}
-	}
-	return
-}
-
-func contains[K Hashable](keys []K, key K) bool {
-	for i := 0; i < len(keys); i++ {
-		if keys[i].Identifier() == key.Identifier() {
-			return true
-		}
-	}
-	return false
 }
 
 func sortByHeight[K Hashable, V any](nodes []Value[K, V]) {

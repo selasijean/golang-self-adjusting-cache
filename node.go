@@ -3,15 +3,17 @@ package cache
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/wcharczuk/go-incr"
 )
 
 type cacheNode[K Hashable, V any] struct {
 	dependencies []K
-	key          *K
+	key          K
 
-	value      *V
+	value      V
+	valid      bool
 	useValueFn bool
 
 	graph *incr.Graph
@@ -26,11 +28,11 @@ type cacheNode[K Hashable, V any] struct {
 
 func newCacheNode[K Hashable, V any](c *cache[K, V], entry Entry[K, V]) (*cacheNode[K, V], error) {
 	graph := c.graph
-	key, value := entry.Key(), entry.Value()
 	n := &cacheNode[K, V]{
 		graph:        graph,
-		key:          &key,
-		value:        &value,
+		key:          entry.Key(),
+		value:        entry.Value(),
+		valid:        true,
 		useValueFn:   false,
 		dependencies: entry.Dependencies(),
 	}
@@ -44,45 +46,46 @@ func newCacheNode[K Hashable, V any](c *cache[K, V], entry Entry[K, V]) (*cacheN
 		incrs[i] = node.incremental
 	}
 
-	n.valueFnIncr = incr.MapNContext(graph, func(ctx context.Context, values ...V) (result V, err error) {
+	n.valueFnIncr = incr.MapNContext(graph, func(ctx context.Context, values ...V) (V, error) {
 		var zero V
-		defer func() {
-			if c.writeBackFn != nil {
-				err = c.writeBackFn(ctx, *n.key, result)
-				if err != nil {
+		var result V
+		var err error
+
+		if !n.useValueFn && n.valid {
+			result = n.value
+		} else {
+			// if cache.Get(key) is called within the valueFn, invalidating enables us to bypass the cached value for the given key
+			n.valid = false
+			val, valErr := c.valueFn(ctx, n.key)
+			if valErr != nil {
+				err = valErr
+			} else {
+				result = val.Value()
+				n.value = result
+				n.valid = true
+
+				// reevaluating valueFn may change the dependencies of the node so we may need to update the graph
+				if adjErr := c.adjustDependencies(n, val.Dependencies()); adjErr != nil {
+					err = adjErr
 					result = zero
+				} else {
+					// adjusting dependencies may add the node back to the recompute heap although we've already reevaluated valueFn so we opt out of reevaluating valueFn if that's the case
+					expertNode := incr.ExpertNode(n.valueFnIncr)
+					if expertNode.HeightInRecomputeHeap() != incr.HeightUnset {
+						n.useValueFn = false
+					}
 				}
 			}
-		}()
-
-		if !n.useValueFn && n.value != nil {
-			result = *n.value
-			return
 		}
 
-		// if cache.Get(key) is called within the valueFn, n.value enables us to invalidate cached value for the given key
-		n.value = nil
-		val, err := c.valueFn(ctx, *n.key)
-		if err != nil {
-			return zero, err
+		if c.writeBackFn != nil {
+			err = c.writeBackFn(ctx, n.key, result)
+			if err != nil {
+				result = zero
+			}
 		}
 
-		result = val.Value()
-		n.value = &result
-
-		// reevaluating valueFn may change the dependencies of the node so we may need to update the graph
-		err = c.adjustDependencies(n, val.Dependencies())
-		if err != nil {
-			result = zero
-		}
-
-		expertNode := incr.ExpertNode(n.valueFnIncr)
-		// adjusting dependencies may add the node back to the recompute heap although we've already reevaluated valueFn so we opt out of reevaluating valueFn if that's the case
-		if expertNode.HeightInRecomputeHeap() != incr.HeightUnset {
-			n.useValueFn = false
-		}
-
-		return
+		return result, err
 	}, incrs...)
 
 	n.valueFnIncr.Node().OnUpdate(func(ctx context.Context) {
@@ -96,7 +99,7 @@ func newCacheNode[K Hashable, V any](c *cache[K, V], entry Entry[K, V]) (*cacheN
 		if c.cutoffFn == nil {
 			return false, nil
 		}
-		return c.cutoffFn(ctx, *n.key, previous, current)
+		return c.cutoffFn(ctx, n.key, previous, current)
 	}
 
 	n.incremental = incr.CutoffContext(graph, n.valueFnIncr, cutoffFn)
@@ -110,7 +113,7 @@ func newCacheNode[K Hashable, V any](c *cache[K, V], entry Entry[K, V]) (*cacheN
 }
 
 func (n *cacheNode[K, V]) Key() K {
-	return *n.key
+	return n.key
 }
 
 func (n *cacheNode[K, V]) Value() V {
@@ -119,8 +122,8 @@ func (n *cacheNode[K, V]) Value() V {
 		return zero
 	}
 
-	if n.graph.IsStabilizing() && n.value != nil {
-		return *n.value
+	if n.graph.IsStabilizing() && n.valid {
+		return n.value
 	}
 
 	return n.incremental.Value()
@@ -178,7 +181,8 @@ func (n *cacheNode[K, V]) unobserve(ctx context.Context) {
 }
 
 func (n *cacheNode[K, V]) setInitialValue(value V) {
-	n.value = &value
+	n.value = value
+	n.valid = true
 	n.useValueFn = false
 
 	if n.graph == nil || n.graph.IsStabilizing() {
@@ -197,10 +201,6 @@ func (n *cacheNode[K, V]) addDependency(node *cacheNode[K, V]) error {
 		return fmt.Errorf("node has no incremental: %v", node.Key())
 	}
 
-	if contains(n.dependencies, node.Key()) {
-		return nil
-	}
-
 	n.dependencies = append(n.dependencies, node.Key())
 	return n.valueFnIncr.AddInput(node.incremental)
 }
@@ -214,14 +214,16 @@ func (n *cacheNode[K, V]) removeDependency(node *cacheNode[K, V]) error {
 		return fmt.Errorf("node has no incremental: %v", node.Key())
 	}
 
-	deps, removed := remove(n.dependencies, node.Key())
-	if !removed {
+	targetID := node.Key().Identifier()
+	idx := slices.IndexFunc(n.dependencies, func(k K) bool {
+		return k.Identifier() == targetID
+	})
+	if idx < 0 {
 		return nil
 	}
+	n.dependencies = slices.Delete(n.dependencies, idx, idx+1)
 
-	n.dependencies = deps
 	id := node.incremental.Node().ID()
-
 	return n.valueFnIncr.RemoveInput(id)
 }
 
@@ -234,11 +236,11 @@ func (n *cacheNode[K, V]) markAsStale() {
 }
 
 func (n *cacheNode[K, V]) isValid() bool {
-	return n.value != nil
+	return n.valid
 }
 
 func (n *cacheNode[K, V]) invalidate() {
-	n.value = nil
+	n.valid = false
 }
 
 func (n *cacheNode[K, V]) purge(ctx context.Context) {
